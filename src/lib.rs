@@ -9,9 +9,9 @@
 //! sharded and segmented to control write amplification.
 
 // Re-export main public types
-pub use partition::{PartitionedTable, PartitionConfig};
-pub use roaring::{RoaringValue, RoaringTableTrait};
-pub use error::{Error};
+pub use error::Error;
+pub use partition::{PartitionConfig, PartitionedTable};
+pub use roaring::{RoaringTableTrait, RoaringValue};
 
 // Re-export internal utilities for advanced users
 pub mod encoding;
@@ -25,7 +25,7 @@ use redb::{ReadTransaction, WriteTransaction};
 use std::marker::PhantomData;
 
 /// Configuration for PartitionedRoaringTable.
-/// 
+///
 /// Combines generic partitioning configuration with roaring-specific settings.
 #[derive(Debug, Clone)]
 pub struct RoaringConfig {
@@ -35,16 +35,16 @@ pub struct RoaringConfig {
 
 impl RoaringConfig {
     /// Creates a new roaring configuration.
-    /// 
+    ///
     /// # Arguments
     /// * `partition` - Partition configuration
-    /// 
+    ///
     /// # Returns
     /// New roaring configuration
     pub fn new(partition: crate::partition::PartitionConfig) -> Self {
         Self { partition }
     }
-    
+
     /// Creates a default configuration suitable for most use cases.
     pub fn default() -> Self {
         Self {
@@ -60,13 +60,13 @@ impl Default for RoaringConfig {
 }
 
 /// Opinionated facade combining partitioned storage with roaring bitmap semantics.
-/// 
+///
 /// This type provides a high-level key-value interface where:
 /// - Keys are opaque byte slices
 /// - Values are Roaring bitmaps (RoaringTreemap<u64>)
 /// - Large values are automatically sharded and segmented
 /// - Write amplification is controlled via segment size limits
-/// 
+///
 /// The facade is opinionated and handles transaction management internally.
 /// For more flexibility, use the lower-level `PartitionedTable` and `RoaringValue`
 /// utilities directly.
@@ -77,11 +77,11 @@ pub struct PartitionedRoaringTable {
 
 impl PartitionedRoaringTable {
     /// Creates a new partitioned roaring table.
-    /// 
+    ///
     /// # Arguments
     /// * `name` - Table name for database storage
     /// * `config` - Configuration for the table
-    /// 
+    ///
     /// # Returns
     /// New table instance
     pub fn new(name: &'static str, config: RoaringConfig) -> Self {
@@ -90,22 +90,22 @@ impl PartitionedRoaringTable {
             value_handler: crate::roaring::RoaringValue::new(),
         }
     }
-    
+
     /// Gets the table name.
     pub fn name(&self) -> &'static str {
         self.inner.name()
     }
-    
+
     /// Gets the configuration.
     pub fn config(&self) -> &PartitionConfig {
         self.inner.config()
     }
-    
+
     /// Opens a read handle for the table.
-    /// 
+    ///
     /// # Arguments
     /// * `txn` - Database read transaction
-    /// 
+    ///
     /// # Returns
     /// Read handle for the table
     pub fn read<'txn>(&'txn self, txn: &'txn ReadTransaction) -> PartitionedRoaringRead<'txn> {
@@ -115,15 +115,18 @@ impl PartitionedRoaringTable {
             txn,
         }
     }
-    
+
     /// Opens a write handle for the table.
-    /// 
+    ///
     /// # Arguments
     /// * `txn` - Database write transaction
-    /// 
+    ///
     /// # Returns
     /// Write handle for the table
-    pub fn write<'txn>(&'txn self, txn: &'txn mut WriteTransaction) -> PartitionedRoaringWrite<'txn> {
+    pub fn write<'txn>(
+        &'txn self,
+        txn: &'txn mut WriteTransaction,
+    ) -> PartitionedRoaringWrite<'txn> {
         PartitionedRoaringWrite {
             table: &self.inner,
             value_handler: &self.value_handler,
@@ -148,23 +151,21 @@ pub struct PartitionedRoaringWrite<'a> {
     _phantom: PhantomData<()>,
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::partition::config::PartitionConfig;
-    
+
     #[test]
     fn test_roaring_config_creation() {
         let partition_config = crate::partition::PartitionConfig::new(16, 64 * 1024, true).unwrap();
         let config = RoaringConfig::new(partition_config);
-        
+
         assert_eq!(config.partition.shard_count, 16);
         assert_eq!(config.partition.segment_max_bytes, 64 * 1024);
         assert!(config.partition.use_meta);
     }
-    
+
     #[test]
     fn test_default_config() {
         let config = RoaringConfig::default();
@@ -172,12 +173,12 @@ mod tests {
         assert_eq!(config.partition.segment_max_bytes, 64 * 1024);
         assert!(config.partition.use_meta);
     }
-    
+
     #[test]
     fn test_partitioned_roaring_table_creation() {
         let config = RoaringConfig::default();
         let table = PartitionedRoaringTable::new("test_table", config);
-        
+
         assert_eq!(table.name(), "test_table");
         assert_eq!(table.config().shard_count, 16);
     }

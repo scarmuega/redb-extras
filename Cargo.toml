@@ -8,3 +8,4 @@ redb = "2.1"
 roaring = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 thiserror = "1.0"
+tempfile = "3.0"
