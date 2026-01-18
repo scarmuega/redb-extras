@@ -50,132 +50,132 @@ impl std::error::Error for RoaringError {
 }
 
 pub trait RoaringValueReadOnlyTable<'txn, K> {
-    /// Gets complete roaring bitmap for the given base key.
+    /// Gets complete roaring bitmap for the given key.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to retrieve (any type that implements redb::Key)
+    /// * `key` - The key to retrieve (any type that implements redb::Key)
     ///
     /// # Returns
     /// The complete RoaringTreemap or empty if not found
-    fn get_bitmap(&self, base_key: K) -> Result<RoaringTreemap>;
+    fn get_bitmap(&self, key: K) -> Result<RoaringTreemap>;
 
-    /// Checks if a member exists in the bitmap for the given base key.
+    /// Checks if a member exists in the bitmap for the given key.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to check
+    /// * `key` - The key to check
     /// * `member` - The member to check for
     ///
     /// # Returns
     /// True if the member exists, false otherwise
-    fn contains_member(&self, base_key: K, member: u64) -> Result<bool> {
-        let bitmap = self.get_bitmap(base_key)?;
+    fn contains_member(&self, key: K, member: u64) -> Result<bool> {
+        let bitmap = self.get_bitmap(key)?;
         Ok(bitmap.contains(member))
     }
 
-    /// Gets the number of members in the bitmap for the given base key.
+    /// Gets the number of members in the bitmap for the given key.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to query
+    /// * `key` - The key to query
     ///
     /// # Returns
     /// The number of members in the bitmap
-    fn get_member_count(&self, base_key: K) -> Result<u64> {
-        let bitmap = self.get_bitmap(base_key)?;
+    fn get_member_count(&self, key: K) -> Result<u64> {
+        let bitmap = self.get_bitmap(key)?;
         Ok(bitmap.len())
     }
 
-    fn iter_members(&self, base_key: K) -> Result<impl Iterator<Item = u64> + '_> {
+    fn iter_members(&self, key: K) -> Result<impl Iterator<Item = u64> + '_> {
         // Get complete bitmap and return iterator
-        let bitmap = self.get_bitmap(base_key)?;
+        let bitmap = self.get_bitmap(key)?;
         Ok(bitmap.into_iter())
     }
 }
 
 pub trait RoaringValueTable<'txn, K>: RoaringValueReadOnlyTable<'txn, K> {
-    /// Inserts a single member ID into the bitmap for the given base key.
+    /// Inserts a single member ID into the bitmap for the given key.
     ///
     /// This method handles shard selection, head segment discovery, segment rolling,
     /// and bitmap serialization automatically.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to modify (any type that implements redb::Key)
+    /// * `key` - The key to modify (any type that implements redb::Key)
     /// * `member` - The member to insert
     ///
     /// # Returns
     /// Result indicating success or failure
-    fn insert_member(&mut self, base_key: K, member: u64) -> Result<()>;
+    fn insert_member(&mut self, key: K, member: u64) -> Result<()>;
 
-    /// Removes a single member ID from the bitmap for the given base key.
+    /// Removes a single member ID from the bitmap for the given key.
     ///
     /// This method handles shard selection, head segment discovery, segment rolling,
     /// and bitmap serialization automatically.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to modify (any type that implements redb::Key)
+    /// * `key` - The key to modify (any type that implements redb::Key)
     /// * `member` - The member to remove
     ///
     /// # Returns
     /// Result indicating success or failure
-    fn remove_member(&mut self, base_key: K, member: u64) -> Result<()>;
+    fn remove_member(&mut self, key: K, member: u64) -> Result<()>;
 
-    /// Inserts multiple members into the bitmap for the given base key.
+    /// Inserts multiple members into the bitmap for the given key.
     ///
     /// This is a batch operation that is more efficient than individual inserts
     /// for large numbers of members.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to modify
+    /// * `key` - The key to modify
     /// * `members` - Iterator of members to insert
     ///
     /// # Returns
     /// Result indicating success or failure
-    fn insert_members<I>(&mut self, base_key: K, members: I) -> Result<()>
+    fn insert_members<I>(&mut self, key: K, members: I) -> Result<()>
     where
         K: Clone,
         I: IntoIterator<Item = u64>,
     {
-        let mut current_bitmap = self.get_bitmap(base_key.clone())?;
+        let mut current_bitmap = self.get_bitmap(key.clone())?;
         current_bitmap.extend(members);
-        self.replace_bitmap(base_key, current_bitmap)
+        self.replace_bitmap(key, current_bitmap)
     }
 
-    /// Removes multiple members from the bitmap for the given base key.
+    /// Removes multiple members from the bitmap for the given key.
     ///
     /// This is a batch operation that is more efficient than individual removals
     /// for large numbers of members.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to modify
+    /// * `key` - The key to modify
     /// * `members` - Iterator of members to remove
     ///
     /// # Returns
     /// Result indicating success or failure
-    fn remove_members<I>(&mut self, base_key: K, members: I) -> Result<()>
+    fn remove_members<I>(&mut self, key: K, members: I) -> Result<()>
     where
         K: Clone,
         I: IntoIterator<Item = u64>,
     {
-        let mut current_bitmap = self.get_bitmap(base_key.clone())?;
+        let mut current_bitmap = self.get_bitmap(key.clone())?;
         for member in members {
             current_bitmap.remove(member);
         }
-        self.replace_bitmap(base_key, current_bitmap)
+        self.replace_bitmap(key, current_bitmap)
     }
 
-    /// Clears all members from the bitmap for the given base key.
+    /// Clears all members from the bitmap for the given key.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to clear
+    /// * `key` - The key to clear
     ///
     /// # Returns
     /// Result indicating success or failure
-    fn clear_bitmap(&mut self, base_key: K) -> Result<()> {
-        self.remove_key(base_key)
+    fn clear_bitmap(&mut self, key: K) -> Result<()> {
+        self.remove_key(key)
     }
 
     // Helper methods for internal implementation
-    fn replace_bitmap(&mut self, base_key: K, bitmap: RoaringTreemap) -> Result<()>;
-    fn remove_key(&mut self, base_key: K) -> Result<()>;
+    fn replace_bitmap(&mut self, key: K, bitmap: RoaringTreemap) -> Result<()>;
+    fn remove_key(&mut self, key: K) -> Result<()>;
 }
 
 mod facade;
