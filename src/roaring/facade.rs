@@ -40,6 +40,38 @@ impl<'txn> RoaringValueTable<'txn, &[u8]> for redb::Table<'txn, &'static [u8], R
 
         Ok(())
     }
+
+    fn remove_member(&mut self, base_key: &[u8], member: u64) -> Result<()> {
+        // Read existing value
+        let mut bitmap = self.get_bitmap(base_key)?;
+
+        // Remove the member
+        bitmap.remove(member);
+
+        // Store the updated bitmap or remove if empty
+        if bitmap.is_empty() {
+            Self::remove(self, base_key)?;
+        } else {
+            Self::insert(self, base_key, &bitmap)?;
+        }
+
+        Ok(())
+    }
+
+    fn replace_bitmap(&mut self, base_key: &[u8], bitmap: RoaringTreemap) -> Result<()> {
+        if bitmap.is_empty() {
+            Self::remove(self, base_key)?;
+        } else {
+            Self::insert(self, base_key, &bitmap)?;
+        }
+        Ok(())
+    }
+
+    fn remove_key(&mut self, base_key: &[u8]) -> Result<()> {
+        Self::remove(self, base_key)?;
+
+        Ok(())
+    }
 }
 
 // Implementation for string keys
@@ -77,6 +109,37 @@ impl<'txn> RoaringValueTable<'txn, &str> for redb::Table<'txn, &'static str, Roa
 
         Ok(())
     }
+
+    fn remove_member(&mut self, base_key: &str, member: u64) -> Result<()> {
+        // Read existing value
+        let mut bitmap = self.get_bitmap(base_key)?;
+
+        // Remove the member
+        bitmap.remove(member);
+
+        // Store the updated bitmap or remove if empty
+        if bitmap.is_empty() {
+            Self::remove(self, base_key)?;
+        } else {
+            Self::insert(self, base_key, &bitmap)?;
+        }
+
+        Ok(())
+    }
+
+    fn replace_bitmap(&mut self, base_key: &str, bitmap: RoaringTreemap) -> Result<()> {
+        if bitmap.is_empty() {
+            Self::remove(self, base_key)?;
+        } else {
+            Self::insert(self, base_key, &bitmap)?;
+        }
+        Ok(())
+    }
+
+    fn remove_key(&mut self, base_key: &str) -> Result<()> {
+        Self::remove(self, base_key)?;
+        Ok(())
+    }
 }
 
 // Implementation for u64 keys
@@ -112,6 +175,37 @@ impl<'txn> RoaringValueTable<'txn, u64> for redb::Table<'txn, u64, RoaringValue>
         // Store the updated bitmap
         Self::insert(self, base_key, &bitmap)?;
 
+        Ok(())
+    }
+
+    fn remove_member(&mut self, base_key: u64, member: u64) -> Result<()> {
+        // Read existing value
+        let mut bitmap = self.get_bitmap(base_key)?;
+
+        // Remove the member
+        bitmap.remove(member);
+
+        // Store the updated bitmap or remove if empty
+        if bitmap.is_empty() {
+            Self::remove(self, base_key)?;
+        } else {
+            Self::insert(self, base_key, &bitmap)?;
+        }
+
+        Ok(())
+    }
+
+    fn replace_bitmap(&mut self, base_key: u64, bitmap: RoaringTreemap) -> Result<()> {
+        if bitmap.is_empty() {
+            Self::remove(self, base_key)?;
+        } else {
+            Self::insert(self, base_key, &bitmap)?;
+        }
+        Ok(())
+    }
+
+    fn remove_key(&mut self, base_key: u64) -> Result<()> {
+        Self::remove(self, base_key)?;
         Ok(())
     }
 }

@@ -48,6 +48,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         u64_table.insert_member(category_key, 1003)?;
 
         println!("Successfully inserted members into all table types!");
+
+        // Demonstrate new operations
+        println!("\nDemonstrating new enhanced operations:");
+
+        // Test member existence checks
+        println!(
+            "Contains user 42: {}",
+            byte_table.contains_member(user_key, 42)?
+        );
+        println!(
+            "Contains user 999: {}",
+            byte_table.contains_member(user_key, 999)?
+        );
+        println!(
+            "Contains product 20: {}",
+            string_table.contains_member(product_key, 20)?
+        );
+        println!(
+            "Contains product 99: {}",
+            string_table.contains_member(product_key, 99)?
+        );
+
+        // Test member counts
+        println!("User count: {}", byte_table.get_member_count(user_key)?);
+        println!(
+            "Product count: {}",
+            string_table.get_member_count(product_key)?
+        );
+        println!(
+            "Category count: {}",
+            u64_table.get_member_count(category_key)?
+        );
+
+        // Demonstrate batch insert
+        println!("\nTesting batch insert operations...");
+        let new_users = vec![1001, 1002, 1003];
+        byte_table.insert_members(user_key, new_users)?;
+        println!(
+            "After batch insert, user count: {}",
+            byte_table.get_member_count(user_key)?
+        );
+
+        // Demonstrate remove operations
+        println!("\nTesting remove operations...");
+        byte_table.remove_member(user_key, 1)?;
+        println!(
+            "After removing user 1, count: {}",
+            byte_table.get_member_count(user_key)?
+        );
+        println!(
+            "Still contains user 42: {}",
+            byte_table.contains_member(user_key, 42)?
+        );
+
+        // Demonstrate batch remove
+        let remove_users = vec![1001, 1002];
+        byte_table.remove_members(user_key, remove_users)?;
+        println!(
+            "After batch removing users 1001,1002, count: {}",
+            byte_table.get_member_count(user_key)?
+        );
+
+        // Demonstrate clear operation
+        println!("\nTesting clear operation...");
+        string_table.clear_bitmap(product_key)?;
+        println!(
+            "After clearing products, count: {}",
+            string_table.get_member_count(product_key)?
+        );
+        println!(
+            "Contains product 10 after clear: {}",
+            string_table.contains_member(product_key, 10)?
+        );
     }
 
     // Commit the transaction
@@ -68,9 +141,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Users (byte key): {:?}", users);
         println!("User count: {}", user_bitmap.len());
 
-        // Check if specific users exist
-        println!("Contains user 42: {}", user_bitmap.contains(42));
-        println!("Contains user 999: {}", user_bitmap.contains(999));
+        // Check if specific users exist (using contains_member method)
+        println!(
+            "Contains user 42: {}",
+            byte_table.contains_member(user_key, 42)?
+        );
+        println!(
+            "Contains user 999: {}",
+            byte_table.contains_member(user_key, 999)?
+        );
 
         // Read and display string key table
         let product_bitmap = string_table.get_bitmap(product_key)?;
@@ -78,9 +157,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Products (string key): {:?}", products);
         println!("Product count: {}", product_bitmap.len());
 
-        // Check if specific products exist
-        println!("Contains product 20: {}", product_bitmap.contains(20));
-        println!("Contains product 99: {}", product_bitmap.contains(99));
+        // Check if specific products exist (using contains_member method)
+        println!(
+            "Contains product 20: {}",
+            string_table.contains_member(product_key, 20)?
+        );
+        println!(
+            "Contains product 99: {}",
+            string_table.contains_member(product_key, 99)?
+        );
 
         // Read and display u64 key table
         let category_bitmap = u64_table.get_bitmap(category_key)?;
@@ -88,9 +173,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Categories (u64 key): {:?}", categories);
         println!("Category count: {}", category_bitmap.len());
 
-        // Check if specific categories exist
-        println!("Contains category 1001: {}", category_bitmap.contains(1001));
-        println!("Contains category 9999: {}", category_bitmap.contains(9999));
+        // Check if specific categories exist (using contains_member method)
+        println!(
+            "Contains category 1001: {}",
+            u64_table.contains_member(category_key, 1001)?
+        );
+        println!(
+            "Contains category 9999: {}",
+            u64_table.contains_member(category_key, 9999)?
+        );
 
         // Try to read a non-existent key in each table type
         let nonexistent_byte_key = b"nonexistent";
