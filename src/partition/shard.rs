@@ -3,8 +3,8 @@
 //! Provides deterministic shard selection using fast hashing to distribute
 //! writes across multiple shards while maintaining consistent placement.
 
-use crate::error::PartitionError;
-use crate::error::Result;
+use crate::partition::PartitionError;
+use crate::Result;
 use xxhash_rust::xxh3::xxh3_64;
 
 /// Selects a shard for a given base key and element id.
@@ -21,7 +21,9 @@ use xxhash_rust::xxh3::xxh3_64;
 /// Shard index in range [0, shard_count)
 pub fn select_shard(base_key: &[u8], element_id: u64, shard_count: u16) -> Result<u16> {
     if shard_count == 0 {
-        return Err(PartitionError::InvalidShardCount(shard_count).into());
+        return Err(crate::error::Error::Partition(
+            PartitionError::InvalidShardCount(shard_count),
+        ));
     }
 
     // Combine base_key and element_id for hashing
@@ -46,8 +48,15 @@ pub fn select_shard(base_key: &[u8], element_id: u64, shard_count: u16) -> Resul
 /// # Returns
 /// Shard index if valid, error if out of range
 pub fn validate_shard_index(shard_index: u16, shard_count: u16) -> Result<u16> {
+    if shard_count == 0 {
+        return Err(crate::error::Error::Partition(
+            PartitionError::InvalidShardCount(shard_count),
+        ));
+    }
     if shard_index >= shard_count {
-        return Err(PartitionError::InvalidShardCount(shard_count).into());
+        return Err(crate::error::Error::Partition(
+            PartitionError::InvalidShardCount(shard_count),
+        ));
     }
     Ok(shard_index)
 }

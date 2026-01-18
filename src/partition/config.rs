@@ -38,17 +38,17 @@ impl PartitionConfig {
     ///
     /// # Returns
     /// Validated configuration or error
-    pub fn new(
-        shard_count: u16,
-        segment_max_bytes: usize,
-        use_meta: bool,
-    ) -> crate::error::Result<Self> {
+    pub fn new(shard_count: u16, segment_max_bytes: usize, use_meta: bool) -> crate::Result<Self> {
         if shard_count == 0 {
-            return Err(crate::error::PartitionError::InvalidShardCount(shard_count).into());
+            return Err(crate::error::Error::Partition(
+                crate::partition::PartitionError::InvalidShardCount(shard_count),
+            ));
         }
 
         if segment_max_bytes == 0 {
-            return Err(crate::error::PartitionError::InvalidSegmentSize(segment_max_bytes).into());
+            return Err(crate::error::Error::Partition(
+                crate::partition::PartitionError::InvalidSegmentSize(segment_max_bytes),
+            ));
         }
 
         Ok(Self {

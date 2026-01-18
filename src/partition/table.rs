@@ -3,10 +3,45 @@
 //! Provides the core storage infrastructure for sharded and segmented data
 //! that can work with any value type.
 
-use crate::error::{PartitionError, Result};
 use crate::partition::config::PartitionConfig;
+use crate::partition::scan::{enumerate_segments, find_head_segment, SegmentInfo};
 use crate::partition::shard::select_shard;
-use redb::{ReadTransaction, ReadableTable, WriteTransaction};
+use crate::partition::PartitionError;
+use crate::Result;
+use redb::{Database, ReadTransaction, ReadableTable, TableDefinition, WriteTransaction};
+use std::collections::HashMap;
+
+/// Encodes a segment key with the format: [key_len][base_key][shard][segment]
+pub fn encode_segment_key(base_key: &[u8], shard: u16, segment: u16) -> Result<Vec<u8>> {
+    let mut key = Vec::with_capacity(4 + base_key.len() + 4);
+
+    // Add key length (4 bytes big-endian)
+    key.extend_from_slice(&(base_key.len() as u32).to_be_bytes());
+
+    // Add base key
+    key.extend_from_slice(base_key);
+
+    // Add shard (2 bytes big-endian)
+    key.extend_from_slice(&shard.to_be_bytes());
+
+    // Add segment (2 bytes big-endian)
+    key.extend_from_slice(&segment.to_be_bytes());
+
+    Ok(key)
+}
+
+// Type aliases for complex return types
+type SegmentDataMap = HashMap<u16, Vec<(SegmentInfo, Option<Vec<u8>>)>>;
+type SegmentSimpleMap = HashMap<u16, Vec<(u16, Vec<u8>)>>;
+type SegmentResult = Option<(SegmentInfo, Vec<u8>)>;
+
+/// Table definition for segment data storage
+pub const SEGMENT_TABLE: TableDefinition<&'static [u8], &'static [u8]> =
+    TableDefinition::new("redb_extras_segments");
+
+/// Table definition for meta data storage (head segment tracking)
+pub const META_TABLE: TableDefinition<&'static [u8], &'static [u8]> =
+    TableDefinition::new("redb_extras_meta");
 
 /// Generic partitioned table that stores values in sharded segments.
 ///
@@ -41,6 +76,40 @@ impl<V> PartitionedTable<V> {
         }
     }
 
+    /// Ensures required tables exist in the database.
+    ///
+    /// This method creates the segment table and optionally the meta table
+    /// if they don't already exist.
+    ///
+    /// # Arguments
+    /// * `db` - The database instance
+    ///
+    /// # Returns
+    /// Ok on success, error on failure
+    pub fn ensure_table_exists(&self, db: &Database) -> Result<()> {
+        let txn = db
+            .begin_write()
+            .map_err(|e| PartitionError::DatabaseError(format!("Failed to begin write: {}", e)))?;
+
+        {
+            let _segment_table = txn.open_table(SEGMENT_TABLE).map_err(|e| {
+                PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+            })?;
+
+            if self.config.use_meta {
+                let _meta_table = txn.open_table(META_TABLE).map_err(|e| {
+                    PartitionError::DatabaseError(format!("Failed to open meta table: {}", e))
+                })?;
+            }
+        }
+
+        txn.commit().map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to commit table creation: {}", e))
+        })?;
+
+        Ok(())
+    }
+
     /// Returns the table name.
     pub fn name(&self) -> &'static str {
         self.name
@@ -53,7 +122,7 @@ impl<V> PartitionedTable<V> {
 
     /// Selects the appropriate shard for a given base key and element.
     pub fn select_shard(&self, base_key: &[u8], element_id: u64) -> Result<u16> {
-        select_shard(base_key, element_id, self.config.shard_count)
+        Ok(select_shard(base_key, element_id, self.config.shard_count)?)
     }
 }
 
@@ -75,6 +144,119 @@ impl<'a, V> PartitionedRead<'a, V> {
     pub fn table(&self) -> &PartitionedTable<V> {
         self.table
     }
+
+    /// Collects all segments across all shards for a given base key.
+    ///
+    /// This method iterates through all shards and collects all segments
+    /// that belong to the specified base key.
+    ///
+    /// # Arguments
+    /// * `base_key` - The base key to search for
+    ///
+    /// # Returns
+    /// HashMap where key is shard ID and value is vector of (segment_info, segment_data) tuples
+    pub fn collect_all_segments(&self, base_key: &[u8]) -> Result<SegmentDataMap> {
+        let mut result = HashMap::new();
+
+        // Open the segment table
+        let table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+        })?;
+
+        // Iterate through all shards
+        for shard in 0..self.table.config.shard_count {
+            let mut shard_segments = Vec::new();
+
+            // Enumerate segments for this shard
+            let mut segment_iter = enumerate_segments(&table, base_key, shard)?;
+
+            while let Some(segment_result) = segment_iter.next() {
+                let segment_info = segment_result?;
+                shard_segments.push((segment_info.clone(), segment_info.segment_data.clone()));
+            }
+
+            if !shard_segments.is_empty() {
+                result.insert(shard, shard_segments);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Enumerates all segments for a given base key across all shards.
+    ///
+    /// This method returns segment data in a simplified format
+    /// for easier consumption by callers.
+    ///
+    /// # Arguments
+    /// * `base_key` - The base key to search for
+    ///
+    /// # Returns
+    /// HashMap where key is shard ID and value is vector of (segment_id, segment_data) tuples
+    pub fn enumerate_all_segments(&self, base_key: &[u8]) -> Result<SegmentSimpleMap> {
+        let mut result = HashMap::new();
+
+        // Open the segment table
+        let table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+        })?;
+
+        // Iterate through all shards
+        for shard in 0..self.table.config.shard_count {
+            let mut shard_segments = Vec::new();
+
+            // Enumerate segments for this shard
+            let mut segment_iter = enumerate_segments(&table, base_key, shard)?;
+
+            while let Some(segment_result) = segment_iter.next() {
+                let segment_info = segment_result?;
+                if let Some(data) = segment_info.segment_data {
+                    shard_segments.push((segment_info.segment_id, data));
+                }
+            }
+
+            if !shard_segments.is_empty() {
+                result.insert(shard, shard_segments);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Reads data for a specific segment.
+    ///
+    /// If segment_info already contains data, it's returned directly.
+    /// Otherwise, the data is read from the database.
+    ///
+    /// # Arguments
+    /// * `segment_info` - Information about the segment to read
+    ///
+    /// # Returns
+    /// Option containing (segment_info, segment_data) or None if segment doesn't exist
+    pub fn read_segment_data(&self, segment_info: &SegmentInfo) -> Result<SegmentResult> {
+        // If segment_info already has data, return it
+        if let Some(ref data) = segment_info.segment_data {
+            return Ok(Some((segment_info.clone(), data.clone())));
+        }
+
+        // Otherwise, read from the database
+        let table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+        })?;
+
+        match table.get(&*segment_info.segment_key) {
+            Ok(Some(value_guard)) => {
+                let data = value_guard.value().to_vec();
+                let mut info_with_data = segment_info.clone();
+                info_with_data.segment_data = Some(data.clone());
+                Ok(Some((info_with_data, data)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                Err(PartitionError::DatabaseError(format!("Failed to read segment: {}", e)).into())
+            }
+        }
+    }
 }
 
 /// Write operations for partitioned tables.
@@ -91,9 +273,161 @@ impl<'a, V> PartitionedWrite<'a, V> {
         Self { table, txn }
     }
 
+    /// Reads segment data for the given segment info.
+    ///
+    /// If segment_info already contains data, it's returned directly.
+    /// Otherwise, the data is read from the database.
+    ///
+    /// # Arguments
+    /// * `segment_info` - Information about the segment to read
+    ///
+    /// # Returns
+    /// Option containing (segment_info, segment_data) or None if segment doesn't exist
+    pub fn read_segment_data(&self, segment_info: &SegmentInfo) -> Result<SegmentResult> {
+        // If segment_info already has data, return it
+        if let Some(ref data) = segment_info.segment_data {
+            return Ok(Some((segment_info.clone(), data.clone())));
+        }
+
+        // Otherwise, read from the database
+        let table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+        })?;
+
+        let result = match table.get(&*segment_info.segment_key) {
+            Ok(Some(value_guard)) => {
+                let data = value_guard.value().to_vec();
+                let mut info_with_data = segment_info.clone();
+                info_with_data.segment_data = Some(data.clone());
+                Ok(Some((info_with_data, data)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(PartitionError::DatabaseError(format!(
+                "Failed to read segment: {}",
+                e
+            ))),
+        };
+
+        // Drop table before returning result
+        drop(table);
+        Ok(result?)
+    }
+
     /// Gets the table reference.
     pub fn table(&self) -> &PartitionedTable<V> {
         self.table
+    }
+
+    /// Finds the head segment using scan method (when meta table is disabled).
+    ///
+    /// This method scans all segments for the given (base_key, shard) pair
+    /// and returns the one with the highest segment ID.
+    ///
+    /// # Arguments
+    /// * `base_key` - The base key to search for
+    /// * `shard` - The shard ID
+    ///
+    /// # Returns
+    /// The head segment ID, or None if no segments exist
+    pub fn find_head_segment_scan(&self, base_key: &[u8], shard: u16) -> Result<Option<u16>> {
+        let table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+        })?;
+
+        Ok(find_head_segment(&table, base_key, shard)?)
+    }
+
+    /// Writes data to a specific segment.
+    ///
+    /// This method overwrites any existing data at the segment key.
+    ///
+    /// # Arguments
+    /// * `segment_key` - The encoded segment key
+    /// * `data` - The data to write
+    ///
+    /// # Returns
+    /// Ok on success, error on failure
+    pub fn write_segment_data(&self, segment_key: &[u8], data: &[u8]) -> Result<()> {
+        let mut table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
+        })?;
+
+        table.insert(segment_key, data).map_err(|e| {
+            PartitionError::DatabaseError(format!("Failed to write segment: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    /// Creates a new segment with the given data.
+    ///
+    /// The segment_id should be the next available ID for this shard.
+    ///
+    /// # Arguments
+    /// * `base_key` - The base key
+    /// * `shard` - The shard ID
+    /// * `segment_id` - The segment ID
+    /// * `data` - The segment data
+    ///
+    /// # Returns
+    /// Ok on success, error on failure
+    pub fn create_new_segment(
+        &self,
+        base_key: &[u8],
+        shard: u16,
+        segment_id: u16,
+        data: &[u8],
+    ) -> Result<()> {
+        let segment_key = encode_segment_key(base_key, shard, segment_id)?;
+        self.write_segment_data(&segment_key, data)
+    }
+
+    /// Updates the head segment with new data, rolling if necessary.
+    ///
+    /// This method checks if the new data fits in the current head segment.
+    /// If it doesn't fit, a new segment is created.
+    ///
+    /// # Arguments
+    /// * `base_key` - The base key
+    /// * `shard` - The shard ID
+    /// * `data` - The new segment data
+    ///
+    /// # Returns
+    /// Tuple of (was_rolled, new_segment_id) where:
+    /// - was_rolled: true if a new segment was created
+    /// - new_segment_id: ID of the segment that now contains the data
+    pub fn update_head_segment(
+        &self,
+        base_key: &[u8],
+        shard: u16,
+        data: &[u8],
+    ) -> Result<(bool, u16)> {
+        // Find current head segment
+        let head_segment = self.find_head_segment_scan(base_key, shard)?;
+
+        match head_segment {
+            Some(segment_id) => {
+                // Check if data fits in current segment
+                if data.len() <= self.table.config.segment_max_bytes {
+                    // Update existing segment
+                    let segment_key = encode_segment_key(base_key, shard, segment_id)?;
+                    self.write_segment_data(&segment_key, data)?;
+                    Ok((false, segment_id))
+                } else {
+                    // Roll to new segment
+                    let new_segment_id = segment_id + 1;
+                    let new_segment_key = encode_segment_key(base_key, shard, new_segment_id)?;
+                    self.write_segment_data(&new_segment_key, data)?;
+                    Ok((true, new_segment_id))
+                }
+            }
+            None => {
+                // No segments exist, create first one
+                let segment_key = encode_segment_key(base_key, shard, 0)?;
+                self.write_segment_data(&segment_key, data)?;
+                Ok((true, 0))
+            }
+        }
     }
 }
 

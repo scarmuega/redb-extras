@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-/// Result type for the public API
+/// Result type alias for convenience
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Main error type exposed to users of the crate.
@@ -15,13 +15,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub enum Error {
     /// Errors from the partition layer (generic storage mechanics)
-    Partition(PartitionError),
+    Partition(crate::partition::PartitionError),
 
     /// Errors from the roaring layer (bitmap-specific operations)
-    Roaring(RoaringError),
-
-    /// Errors from key/value encoding/decoding
-    Encoding(EncodingError),
+    Roaring(crate::roaring::RoaringError),
 
     /// Invalid input parameters
     InvalidInput(String),
@@ -30,21 +27,21 @@ pub enum Error {
     TransactionFailed(String),
 }
 
-impl From<PartitionError> for Error {
-    fn from(err: PartitionError) -> Self {
+impl From<crate::partition::PartitionError> for Error {
+    fn from(err: crate::partition::PartitionError) -> Self {
         Error::Partition(err)
     }
 }
 
-impl From<RoaringError> for Error {
-    fn from(err: RoaringError) -> Self {
+impl From<crate::roaring::RoaringError> for Error {
+    fn from(err: crate::roaring::RoaringError) -> Self {
         Error::Roaring(err)
     }
 }
 
-impl From<EncodingError> for Error {
-    fn from(err: EncodingError) -> Self {
-        Error::Encoding(err)
+impl From<redb::StorageError> for Error {
+    fn from(err: redb::StorageError) -> Self {
+        Error::TransactionFailed(format!("Storage error: {}", err))
     }
 }
 
@@ -53,7 +50,6 @@ impl std::error::Error for Error {
         match self {
             Error::Partition(err) => err.source(),
             Error::Roaring(err) => err.source(),
-            Error::Encoding(err) => err.source(),
             Error::InvalidInput(_) => None,
             Error::TransactionFailed(_) => None,
         }
@@ -65,145 +61,8 @@ impl fmt::Display for Error {
         match self {
             Error::Partition(err) => write!(f, "Partition error: {}", err),
             Error::Roaring(err) => write!(f, "Roaring error: {}", err),
-            Error::Encoding(err) => write!(f, "Encoding error: {}", err),
             Error::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Error::TransactionFailed(msg) => write!(f, "Transaction failed: {}", msg),
-        }
-    }
-}
-
-/// Errors specific to the partition layer.
-/// These are concerned with generic storage mechanics and are independent of value types.
-#[derive(Debug)]
-pub enum PartitionError {
-    /// Invalid shard count configuration
-    InvalidShardCount(u16),
-
-    /// Invalid segment size configuration
-    InvalidSegmentSize(usize),
-
-    /// Meta table operations failed
-    MetaOperationFailed(String),
-
-    /// Segment scan failed
-    SegmentScanFailed(String),
-
-    /// Database operation failed
-    DatabaseError(String),
-}
-
-impl std::error::Error for PartitionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl fmt::Display for PartitionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PartitionError::InvalidShardCount(count) => {
-                write!(
-                    f,
-                    "Invalid shard count {}: must be between 1 and 65535",
-                    count
-                )
-            }
-            PartitionError::InvalidSegmentSize(size) => {
-                write!(f, "Invalid segment size {}: must be greater than 0", size)
-            }
-            PartitionError::MetaOperationFailed(msg) => {
-                write!(f, "Meta table operation failed: {}", msg)
-            }
-            PartitionError::SegmentScanFailed(msg) => {
-                write!(f, "Segment scan failed: {}", msg)
-            }
-            PartitionError::DatabaseError(msg) => {
-                write!(f, "Database error: {}", msg)
-            }
-        }
-    }
-}
-
-/// Errors specific to the roaring layer.
-/// These are concerned with bitmap operations and value-specific semantics.
-#[derive(Debug)]
-pub enum RoaringError {
-    /// Failed to serialize/deserialize RoaringTreemap
-    SerializationFailed(String),
-
-    /// Compaction operation failed
-    CompactionFailed(String),
-
-    /// Invalid roaring bitmap data
-    InvalidBitmap(String),
-
-    /// Size query failed
-    SizeQueryFailed(String),
-}
-
-impl std::error::Error for RoaringError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl fmt::Display for RoaringError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RoaringError::SerializationFailed(msg) => {
-                write!(f, "Roaring serialization failed: {}", msg)
-            }
-            RoaringError::CompactionFailed(msg) => {
-                write!(f, "Compaction failed: {}", msg)
-            }
-            RoaringError::InvalidBitmap(msg) => {
-                write!(f, "Invalid roaring bitmap: {}", msg)
-            }
-            RoaringError::SizeQueryFailed(msg) => {
-                write!(f, "Size query failed: {}", msg)
-            }
-        }
-    }
-}
-
-/// Errors specific to key/value encoding.
-/// These handle the binary format used for storage.
-#[derive(Debug)]
-pub enum EncodingError {
-    /// Invalid key encoding
-    InvalidKeyEncoding(String),
-
-    /// Invalid value encoding
-    InvalidValueEncoding(String),
-
-    /// Buffer too small for encoding
-    BufferTooSmall { need: usize, have: usize },
-
-    /// Unsupported encoding version
-    UnsupportedVersion(u8),
-}
-
-impl std::error::Error for EncodingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl fmt::Display for EncodingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EncodingError::InvalidKeyEncoding(msg) => {
-                write!(f, "Invalid key encoding: {}", msg)
-            }
-            EncodingError::InvalidValueEncoding(msg) => {
-                write!(f, "Invalid value encoding: {}", msg)
-            }
-            EncodingError::BufferTooSmall { need, have } => {
-                write!(f, "Buffer too small: need {} bytes, have {}", need, have)
-            }
-            EncodingError::UnsupportedVersion(version) => {
-                write!(f, "Unsupported encoding version: {}", version)
-            }
         }
     }
 }

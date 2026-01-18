@@ -3,9 +3,9 @@
 //! Provides encoding, decoding, and size information for RoaringTreemap values
 //! stored in partitioned segments.
 
-use crate::encoding::key::{VALUE_VERSION, decode_roaring_value, encode_roaring_value};
-use crate::error::Result;
-use crate::error::RoaringError;
+use super::RoaringError;
+use crate::Result;
+use redb::Value as RedbValue;
 use roaring::RoaringTreemap;
 
 /// Value handler for RoaringTreemap in partitioned tables.
@@ -37,7 +37,12 @@ impl RoaringValue {
             .serialize_into(&mut buf)
             .map_err(|e| RoaringError::SerializationFailed(e.to_string()))?;
 
-        Ok(encode_roaring_value(&buf))
+        // Add version prefix (current version = 1)
+        let mut result = Vec::with_capacity(1 + buf.len());
+        result.push(1u8); // Version byte
+        result.extend_from_slice(&buf);
+
+        Ok(result)
     }
 
     /// Decodes storage bytes into a RoaringTreemap.
@@ -48,10 +53,14 @@ impl RoaringValue {
     /// # Returns
     /// Decoded RoaringTreemap
     pub fn decode(&self, data: &[u8]) -> Result<RoaringTreemap> {
-        let (version, bitmap_bytes) =
-            decode_roaring_value(data).map_err(|e| RoaringError::InvalidBitmap(e.to_string()))?;
+        if data.is_empty() {
+            return Err(RoaringError::InvalidBitmap("Empty data".to_string()).into());
+        }
 
-        if version != VALUE_VERSION {
+        let version = data[0];
+        let bitmap_bytes = &data[1..];
+
+        if version != 1 {
             return Err(
                 RoaringError::InvalidBitmap(format!("Unsupported version: {}", version)).into(),
             );
@@ -112,6 +121,43 @@ impl RoaringValue {
 impl Default for RoaringValue {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl RedbValue for RoaringValue {
+    type SelfType<'a>
+        = RoaringTreemap
+    where
+        Self: 'a;
+    type AsBytes<'a>
+        = Vec<u8>
+    where
+        Self: 'a;
+
+    fn fixed_width() -> Option<usize> {
+        None // Variable width serialization
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        let handler = RoaringValue::new();
+        handler
+            .decode(data)
+            .unwrap_or_else(|_| RoaringTreemap::new())
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b,
+    {
+        let handler = RoaringValue::new();
+        handler.encode(value).unwrap_or_else(|_| Vec::new())
+    }
+
+    fn type_name() -> redb::TypeName {
+        redb::TypeName::new("RoaringTreemap")
     }
 }
 

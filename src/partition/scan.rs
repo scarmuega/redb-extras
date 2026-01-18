@@ -4,10 +4,27 @@
 //! when meta table is disabled. It uses redb's range scanning capabilities
 //! to efficiently find segments for a given base key and shard.
 
-use crate::encoding::key::build_segment_prefix;
-use crate::error::{PartitionError, Result};
+use crate::partition::PartitionError;
+use crate::Result;
 use redb::ReadableTable;
 use std::marker::PhantomData;
+
+/// Builds a segment prefix key for scanning all segments of a given (base_key, shard) pair.
+/// Segment keys have the format: [key_len][base_key][shard][segment]
+fn build_segment_prefix(base_key: &[u8], shard: u16) -> Result<Vec<u8>> {
+    let mut prefix = Vec::with_capacity(4 + base_key.len() + 2);
+
+    // Add key length (4 bytes big-endian)
+    prefix.extend_from_slice(&(base_key.len() as u32).to_be_bytes());
+
+    // Add base key
+    prefix.extend_from_slice(base_key);
+
+    // Add shard (2 bytes big-endian)
+    prefix.extend_from_slice(&shard.to_be_bytes());
+
+    Ok(prefix)
+}
 
 /// Information about a discovered segment.
 #[derive(Debug, Clone)]
@@ -257,7 +274,7 @@ impl<'a> Iterator for SegmentIterator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::key;
+
     use redb::{Database, TableDefinition};
 
     const TEST_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("test_scan");
@@ -270,7 +287,7 @@ mod tests {
         let (start, end) = build_segment_scan_range(base_key, shard).unwrap();
 
         // Start should be the segment prefix
-        let expected_prefix = key::build_segment_prefix(base_key, shard).unwrap();
+        let expected_prefix = build_segment_prefix(base_key, shard).unwrap();
         assert_eq!(start, expected_prefix);
 
         // End should be start + 1 on the last byte
@@ -339,7 +356,8 @@ mod tests {
 
             // Insert some test segments
             for segment in 0..3u16 {
-                let segment_key = key::encode_segment_key(base_key, shard, segment).unwrap();
+                let segment_key =
+                    crate::partition::table::encode_segment_key(base_key, shard, segment).unwrap();
                 let segment_data = format!("segment_{}", segment).into_bytes();
                 table.insert(&*segment_key, &*segment_data).unwrap();
             }
@@ -380,7 +398,8 @@ mod tests {
 
             // Insert segments 0, 2, and 5 (non-sequential)
             for segment in [0u16, 2u16, 5u16] {
-                let segment_key = key::encode_segment_key(base_key, shard, segment).unwrap();
+                let segment_key =
+                    crate::partition::table::encode_segment_key(base_key, shard, segment).unwrap();
                 let segment_data = format!("segment_{}", segment).into_bytes();
                 table.insert(&*segment_key, &*segment_data).unwrap();
             }
