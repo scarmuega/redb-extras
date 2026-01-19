@@ -55,5 +55,7 @@ pub mod iterator;
 pub mod key;
 
 // Re-export main types for public API
-pub use iterator::{BucketIterExt, BucketRangeIterator};
+pub use iterator::{
+    BucketIterExt, BucketMultimapIterExt, BucketRangeIterator, BucketRangeMultimapIterator,
+};
 pub use key::{BucketedKey, KeyBuilder};
