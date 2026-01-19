@@ -4,25 +4,36 @@
 
 use crate::buckets::key::{BucketedKey, KeyBuilder};
 use crate::buckets::BucketError;
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::ReadOnlyTable;
 
 /// Iterator over a range of buckets for a specific base key.
 ///
 /// BucketRangeIterator enables efficient traversal of all values for a given
 /// base key across a specified range of bucket numbers.
-pub struct BucketRangeIterator<V: redb::Value + 'static> {
-    table_def: TableDefinition<'static, BucketedKey<u64>, V>,
+pub struct BucketRangeIterator<K, V>
+where
+    K: redb::Key + 'static,
+    BucketedKey<K>: redb::Key + redb::Value,
+    V: redb::Value + 'static,
+{
+    table: ReadOnlyTable<BucketedKey<K>, V>,
     key_builder: KeyBuilder,
-    base_key: u64,
+    base_key: K,
     start_bucket: u64,
     end_bucket: u64,
 }
 
-impl<V: redb::Value + 'static> BucketRangeIterator<V> {
+impl<K, V> BucketRangeIterator<K, V>
+where
+    K: redb::Key,
+    BucketedKey<K>: redb::Key + redb::Value,
+    V: redb::Value + 'static,
+{
     /// Create a new bucket range iterator.
     pub fn new(
+        table: ReadOnlyTable<BucketedKey<K>, V>,
         key_builder: &KeyBuilder,
-        base_key: u64,
+        base_key: K,
         start_bucket: u64,
         end_bucket: u64,
     ) -> Result<Self, BucketError> {
@@ -33,9 +44,8 @@ impl<V: redb::Value + 'static> BucketRangeIterator<V> {
             });
         }
 
-        let table_def = TableDefinition::<BucketedKey<u64>, V>::new("bucketed_table");
         Ok(Self {
-            table_def,
+            table,
             key_builder: key_builder.clone(),
             base_key,
             start_bucket,
@@ -49,35 +59,47 @@ impl<V: redb::Value + 'static> BucketRangeIterator<V> {
     }
 }
 
-/// Extension trait for convenient bucket iteration on tables.
-pub trait BucketIterExt<V: redb::Value + 'static> {
+/// Extension trait for convenient bucket iteration on read-only tables.
+pub trait BucketIterExt<K, V>
+where
+    K: redb::Key,
+    BucketedKey<K>: redb::Key + redb::Value,
+    V: redb::Value + 'static,
+{
     fn bucket_range(
-        &self,
+        self,
         key_builder: &KeyBuilder,
-        base_key: u64,
+        base_key: K,
         start_bucket: u64,
         end_bucket: u64,
-    ) -> Result<BucketRangeIterator<V>, BucketError>;
+    ) -> Result<BucketRangeIterator<K, V>, BucketError>;
 }
 
-impl<V: redb::Value + 'static> BucketIterExt<V> for Database {
+impl<K, V> BucketIterExt<K, V> for ReadOnlyTable<BucketedKey<K>, V>
+where
+    K: redb::Key,
+    BucketedKey<K>: redb::Key + redb::Value,
+    V: redb::Value + 'static,
+{
     fn bucket_range(
-        &self,
+        self,
         key_builder: &KeyBuilder,
-        base_key: u64,
+        base_key: K,
         start_bucket: u64,
         end_bucket: u64,
-    ) -> Result<BucketRangeIterator<V>, BucketError> {
-        BucketRangeIterator::new(key_builder, base_key, start_bucket, end_bucket)
+    ) -> Result<BucketRangeIterator<K, V>, BucketError> {
+        BucketRangeIterator::new(self, key_builder, base_key, start_bucket, end_bucket)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redb::{Database, ReadableDatabase, TableDefinition};
     use tempfile::NamedTempFile;
 
-    type TestTable = TableDefinition<'static, BucketedKey<u64>, String>;
+    const TEST_TABLE: TableDefinition<'static, BucketedKey<u64>, String> =
+        TableDefinition::new("test_table");
 
     #[test]
     fn test_basic_functionality() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,7 +111,7 @@ mod tests {
         {
             let write_txn = db.begin_write()?;
             {
-                let mut table: redb::TableHandle<TestTable> = write_txn.open_table(TestTable)?;
+                let mut table = write_txn.open_table(TEST_TABLE)?;
 
                 // Insert values for user123 in different buckets
                 table.insert(key_builder.bucketed_key(123u64, 50), "value_50".to_string())?;
@@ -115,11 +137,13 @@ mod tests {
         // Test that we can create bucket range iterators
         {
             let read_txn = db.begin_read()?;
-            let iter = BucketRangeIterator::new(&key_builder, 123u64, 0, 1)?;
+            let table = read_txn.open_table(TEST_TABLE)?;
+            let iter = BucketRangeIterator::new(table, &key_builder, 123u64, 0, 1)?;
             assert_eq!(iter.bucket_range(), (0, 1));
 
             // Test invalid range
-            let invalid_iter = BucketRangeIterator::new(&key_builder, 123u64, 2, 1);
+            let table = read_txn.open_table(TEST_TABLE)?;
+            let invalid_iter = BucketRangeIterator::new(table, &key_builder, 123u64, 2, 1);
             assert!(invalid_iter.is_err());
         }
 
