@@ -17,6 +17,9 @@ pub enum BucketError {
 
     /// Serialization operation failed
     SerializationError(String),
+
+    /// Iteration over bucket range failed
+    IterationError(String),
 }
 
 impl fmt::Display for BucketError {
@@ -35,6 +38,9 @@ impl fmt::Display for BucketError {
             BucketError::SerializationError(msg) => {
                 write!(f, "Serialization error: {}", msg)
             }
+            BucketError::IterationError(msg) => {
+                write!(f, "Bucket iteration error: {}", msg)
+            }
         }
     }
 }
@@ -49,5 +55,5 @@ pub mod iterator;
 pub mod key;
 
 // Re-export main types for public API
-pub use iterator::BucketRangeIterator;
+pub use iterator::{BucketIterExt, BucketRangeIterator};
 pub use key::{BucketedKey, KeyBuilder};

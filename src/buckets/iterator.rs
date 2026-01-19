@@ -9,47 +9,53 @@ use redb::ReadOnlyTable;
 /// Iterator over a range of buckets for a specific base key.
 ///
 /// BucketRangeIterator enables efficient traversal of all values for a given
-/// base key across a specified range of bucket numbers.
-pub struct BucketRangeIterator<K, V>
+/// base key across a specified range of sequence values.
+pub struct BucketRangeIterator<V>
 where
-    K: redb::Key + 'static,
-    BucketedKey<K>: redb::Key + redb::Value,
     V: redb::Value + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
 {
-    table: ReadOnlyTable<BucketedKey<K>, V>,
-    key_builder: KeyBuilder,
-    base_key: K,
+    range: redb::Range<'static, BucketedKey<u64>, V>,
+    base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
+    done: bool,
 }
 
-impl<K, V> BucketRangeIterator<K, V>
+impl<V> BucketRangeIterator<V>
 where
-    K: redb::Key,
-    BucketedKey<K>: redb::Key + redb::Value,
     V: redb::Value + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
 {
     /// Create a new bucket range iterator.
     pub fn new(
-        table: ReadOnlyTable<BucketedKey<K>, V>,
+        table: &ReadOnlyTable<BucketedKey<u64>, V>,
         key_builder: &KeyBuilder,
-        base_key: K,
-        start_bucket: u64,
-        end_bucket: u64,
+        base_key: u64,
+        start_sequence: u64,
+        end_sequence: u64,
     ) -> Result<Self, BucketError> {
-        if start_bucket > end_bucket {
+        if start_sequence > end_sequence {
             return Err(BucketError::InvalidRange {
-                start: start_bucket,
-                end: end_bucket,
+                start: start_sequence,
+                end: end_sequence,
             });
         }
 
+        let bucket_size = key_builder.bucket_size();
+        let start_bucket = start_sequence / bucket_size;
+        let end_bucket = end_sequence / bucket_size;
+        let start_key = BucketedKey::new(base_key, start_bucket);
+        let range = table.range(start_key..).map_err(|err| {
+            BucketError::IterationError(format!("Failed to create range iterator: {}", err))
+        })?;
+
         Ok(Self {
-            table,
-            key_builder: key_builder.clone(),
+            range,
             base_key,
             start_bucket,
             end_bucket,
+            done: false,
         })
     }
 
@@ -59,36 +65,74 @@ where
     }
 }
 
-/// Extension trait for convenient bucket iteration on read-only tables.
-pub trait BucketIterExt<K, V>
+impl<V> Iterator for BucketRangeIterator<V>
 where
-    K: redb::Key,
-    BucketedKey<K>: redb::Key + redb::Value,
     V: redb::Value + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
 {
-    fn bucket_range(
-        self,
-        key_builder: &KeyBuilder,
-        base_key: K,
-        start_bucket: u64,
-        end_bucket: u64,
-    ) -> Result<BucketRangeIterator<K, V>, BucketError>;
+    type Item = Result<V, BucketError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        loop {
+            match self.range.next() {
+                Some(Ok((key_guard, value_guard))) => {
+                    let key = key_guard.value();
+                    if key.bucket > self.end_bucket {
+                        self.done = true;
+                        return None;
+                    }
+                    if key.base_key == self.base_key {
+                        return Some(Ok(V::from(value_guard.value())));
+                    }
+                }
+                Some(Err(err)) => {
+                    self.done = true;
+                    return Some(Err(BucketError::IterationError(format!(
+                        "Database error during iteration: {}",
+                        err
+                    ))));
+                }
+                None => {
+                    self.done = true;
+                    return None;
+                }
+            }
+        }
+    }
 }
 
-impl<K, V> BucketIterExt<K, V> for ReadOnlyTable<BucketedKey<K>, V>
+/// Extension trait for convenient bucket iteration on read-only tables.
+pub trait BucketIterExt<V>
 where
-    K: redb::Key,
-    BucketedKey<K>: redb::Key + redb::Value,
     V: redb::Value + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
 {
     fn bucket_range(
-        self,
+        &self,
         key_builder: &KeyBuilder,
-        base_key: K,
-        start_bucket: u64,
-        end_bucket: u64,
-    ) -> Result<BucketRangeIterator<K, V>, BucketError> {
-        BucketRangeIterator::new(self, key_builder, base_key, start_bucket, end_bucket)
+        base_key: u64,
+        start_sequence: u64,
+        end_sequence: u64,
+    ) -> Result<BucketRangeIterator<V>, BucketError>;
+}
+
+impl<V> BucketIterExt<V> for ReadOnlyTable<BucketedKey<u64>, V>
+where
+    V: redb::Value + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
+{
+    fn bucket_range(
+        &self,
+        key_builder: &KeyBuilder,
+        base_key: u64,
+        start_sequence: u64,
+        end_sequence: u64,
+    ) -> Result<BucketRangeIterator<V>, BucketError> {
+        BucketRangeIterator::new(self, key_builder, base_key, start_sequence, end_sequence)
     }
 }
 
@@ -138,13 +182,35 @@ mod tests {
         {
             let read_txn = db.begin_read()?;
             let table = read_txn.open_table(TEST_TABLE)?;
-            let iter = BucketRangeIterator::new(table, &key_builder, 123u64, 0, 1)?;
+            let iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 0, 199)?;
             assert_eq!(iter.bucket_range(), (0, 1));
 
             // Test invalid range
-            let table = read_txn.open_table(TEST_TABLE)?;
-            let invalid_iter = BucketRangeIterator::new(table, &key_builder, 123u64, 2, 1);
+            let invalid_iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 200, 100);
             assert!(invalid_iter.is_err());
+        }
+
+        // Test value iteration and base key filtering
+        {
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(TEST_TABLE)?;
+            let iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 0, 299)?;
+            let values: Vec<String> = iter.collect::<Result<_, _>>()?;
+            assert_eq!(
+                values,
+                vec![
+                    "value_50".to_string(),
+                    "value_150".to_string(),
+                    "value_250".to_string()
+                ]
+            );
+
+            let iter = table.bucket_range(&key_builder, 456u64, 0, 299)?;
+            let values: Vec<String> = iter.collect::<Result<_, _>>()?;
+            assert_eq!(
+                values,
+                vec!["other_50".to_string(), "other_150".to_string()]
+            );
         }
 
         Ok(())
