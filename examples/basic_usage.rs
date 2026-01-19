@@ -3,7 +3,7 @@
 //! This example demonstrates basic CRUD operations on roaring bitmaps
 //! stored in redb tables.
 
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 use redb_extras::roaring::{RoaringValue, RoaringValueReadOnlyTable as _, RoaringValueTable as _};
 
 // Define tables with different key types to demonstrate generic support

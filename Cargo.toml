@@ -14,7 +14,7 @@ categories = ["database", "data-structures", "algorithms"]
 readme = "README.md"
 
 [dependencies]
-redb = "2.1"
+redb = "3.1"
 roaring = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 thiserror = "1.0"

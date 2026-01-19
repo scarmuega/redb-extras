@@ -275,7 +275,7 @@ impl<'a> Iterator for SegmentIterator<'a> {
 mod tests {
     use super::*;
 
-    use redb::{Database, TableDefinition};
+    use redb::{Database, ReadableDatabase, TableDefinition};
 
     const TEST_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("test_scan");
 

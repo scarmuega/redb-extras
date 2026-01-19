@@ -11,23 +11,23 @@ use crate::Result;
 use redb::{Database, ReadTransaction, ReadableTable, TableDefinition, WriteTransaction};
 use std::collections::HashMap;
 
-/// Encodes a segment key with the format: [key_len][base_key][shard][segment]
-pub fn encode_segment_key(base_key: &[u8], shard: u16, segment: u16) -> Result<Vec<u8>> {
-    let mut key = Vec::with_capacity(4 + base_key.len() + 4);
+/// Encodes a segment key with the format: \\[key_len\\]\\[key\\]\\[shard\\]\\[segment\\]
+pub fn encode_segment_key(key: &[u8], shard: u16, segment: u16) -> Result<Vec<u8>> {
+    let mut encoded_key = Vec::with_capacity(4 + key.len() + 4);
 
     // Add key length (4 bytes big-endian)
-    key.extend_from_slice(&(base_key.len() as u32).to_be_bytes());
+    encoded_key.extend_from_slice(&(key.len() as u32).to_be_bytes());
 
     // Add base key
-    key.extend_from_slice(base_key);
+    encoded_key.extend_from_slice(key);
 
     // Add shard (2 bytes big-endian)
-    key.extend_from_slice(&shard.to_be_bytes());
+    encoded_key.extend_from_slice(&shard.to_be_bytes());
 
     // Add segment (2 bytes big-endian)
-    key.extend_from_slice(&segment.to_be_bytes());
+    encoded_key.extend_from_slice(&segment.to_be_bytes());
 
-    Ok(key)
+    Ok(encoded_key)
 }
 
 // Type aliases for complex return types
@@ -121,8 +121,8 @@ impl<V> PartitionedTable<V> {
     }
 
     /// Selects the appropriate shard for a given base key and element.
-    pub fn select_shard(&self, base_key: &[u8], element_id: u64) -> Result<u16> {
-        Ok(select_shard(base_key, element_id, self.config.shard_count)?)
+    pub fn select_shard(&self, key: &[u8], element_id: u64) -> Result<u16> {
+        Ok(select_shard(key, element_id, self.config.shard_count)?)
     }
 }
 
@@ -151,11 +151,11 @@ impl<'a, V> PartitionedRead<'a, V> {
     /// that belong to the specified base key.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to search for
+    /// * `key` - The key to search for
     ///
     /// # Returns
     /// HashMap where key is shard ID and value is vector of (segment_info, segment_data) tuples
-    pub fn collect_all_segments(&self, base_key: &[u8]) -> Result<SegmentDataMap> {
+    pub fn collect_all_segments(&self, key: &[u8]) -> Result<SegmentDataMap> {
         let mut result = HashMap::new();
 
         // Open the segment table
@@ -168,7 +168,7 @@ impl<'a, V> PartitionedRead<'a, V> {
             let mut shard_segments = Vec::new();
 
             // Enumerate segments for this shard
-            let mut segment_iter = enumerate_segments(&table, base_key, shard)?;
+            let mut segment_iter = enumerate_segments(&table, key, shard)?;
 
             while let Some(segment_result) = segment_iter.next() {
                 let segment_info = segment_result?;
@@ -189,11 +189,11 @@ impl<'a, V> PartitionedRead<'a, V> {
     /// for easier consumption by callers.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to search for
+    /// * `key` - The key to search for
     ///
     /// # Returns
     /// HashMap where key is shard ID and value is vector of (segment_id, segment_data) tuples
-    pub fn enumerate_all_segments(&self, base_key: &[u8]) -> Result<SegmentSimpleMap> {
+    pub fn enumerate_all_segments(&self, key: &[u8]) -> Result<SegmentSimpleMap> {
         let mut result = HashMap::new();
 
         // Open the segment table
@@ -206,7 +206,7 @@ impl<'a, V> PartitionedRead<'a, V> {
             let mut shard_segments = Vec::new();
 
             // Enumerate segments for this shard
-            let mut segment_iter = enumerate_segments(&table, base_key, shard)?;
+            let mut segment_iter = enumerate_segments(&table, key, shard)?;
 
             while let Some(segment_result) = segment_iter.next() {
                 let segment_info = segment_result?;
@@ -320,21 +320,21 @@ impl<'a, V> PartitionedWrite<'a, V> {
 
     /// Finds the head segment using scan method (when meta table is disabled).
     ///
-    /// This method scans all segments for the given (base_key, shard) pair
+    /// This method scans all segments for the given (key, shard) pair
     /// and returns the one with the highest segment ID.
     ///
     /// # Arguments
-    /// * `base_key` - The base key to search for
+    /// * `key` - The key to search for
     /// * `shard` - The shard ID
     ///
     /// # Returns
     /// The head segment ID, or None if no segments exist
-    pub fn find_head_segment_scan(&self, base_key: &[u8], shard: u16) -> Result<Option<u16>> {
+    pub fn find_head_segment_scan(&self, key: &[u8], shard: u16) -> Result<Option<u16>> {
         let table = self.txn.open_table(SEGMENT_TABLE).map_err(|e| {
             PartitionError::DatabaseError(format!("Failed to open segment table: {}", e))
         })?;
 
-        Ok(find_head_segment(&table, base_key, shard)?)
+        Ok(find_head_segment(&table, key, shard)?)
     }
 
     /// Writes data to a specific segment.
@@ -364,7 +364,7 @@ impl<'a, V> PartitionedWrite<'a, V> {
     /// The segment_id should be the next available ID for this shard.
     ///
     /// # Arguments
-    /// * `base_key` - The base key
+    /// * `key` - The base key
     /// * `shard` - The shard ID
     /// * `segment_id` - The segment ID
     /// * `data` - The segment data
@@ -373,12 +373,12 @@ impl<'a, V> PartitionedWrite<'a, V> {
     /// Ok on success, error on failure
     pub fn create_new_segment(
         &self,
-        base_key: &[u8],
+        key: &[u8],
         shard: u16,
         segment_id: u16,
         data: &[u8],
     ) -> Result<()> {
-        let segment_key = encode_segment_key(base_key, shard, segment_id)?;
+        let segment_key = encode_segment_key(key, shard, segment_id)?;
         self.write_segment_data(&segment_key, data)
     }
 
@@ -388,7 +388,7 @@ impl<'a, V> PartitionedWrite<'a, V> {
     /// If it doesn't fit, a new segment is created.
     ///
     /// # Arguments
-    /// * `base_key` - The base key
+    /// * `key` - The base key
     /// * `shard` - The shard ID
     /// * `data` - The new segment data
     ///
@@ -396,34 +396,29 @@ impl<'a, V> PartitionedWrite<'a, V> {
     /// Tuple of (was_rolled, new_segment_id) where:
     /// - was_rolled: true if a new segment was created
     /// - new_segment_id: ID of the segment that now contains the data
-    pub fn update_head_segment(
-        &self,
-        base_key: &[u8],
-        shard: u16,
-        data: &[u8],
-    ) -> Result<(bool, u16)> {
+    pub fn update_head_segment(&self, key: &[u8], shard: u16, data: &[u8]) -> Result<(bool, u16)> {
         // Find current head segment
-        let head_segment = self.find_head_segment_scan(base_key, shard)?;
+        let head_segment = self.find_head_segment_scan(key, shard)?;
 
         match head_segment {
             Some(segment_id) => {
                 // Check if data fits in current segment
                 if data.len() <= self.table.config.segment_max_bytes {
                     // Update existing segment
-                    let segment_key = encode_segment_key(base_key, shard, segment_id)?;
+                    let segment_key = encode_segment_key(key, shard, segment_id)?;
                     self.write_segment_data(&segment_key, data)?;
                     Ok((false, segment_id))
                 } else {
                     // Roll to new segment
                     let new_segment_id = segment_id + 1;
-                    let new_segment_key = encode_segment_key(base_key, shard, new_segment_id)?;
+                    let new_segment_key = encode_segment_key(key, shard, new_segment_id)?;
                     self.write_segment_data(&new_segment_key, data)?;
                     Ok((true, new_segment_id))
                 }
             }
             None => {
                 // No segments exist, create first one
-                let segment_key = encode_segment_key(base_key, shard, 0)?;
+                let segment_key = encode_segment_key(key, shard, 0)?;
                 self.write_segment_data(&segment_key, data)?;
                 Ok((true, 0))
             }
@@ -451,14 +446,14 @@ mod tests {
         let config = PartitionConfig::new(8, 1024, true).unwrap();
         let table: PartitionedTable<()> = PartitionedTable::new("test", config);
 
-        let base_key = b"test_key";
+        let key = b"test_key";
         let element_id = 12345;
 
-        let shard = table.select_shard(base_key, element_id).unwrap();
+        let shard = table.select_shard(key, element_id).unwrap();
         assert!(shard < 8);
 
         // Should be deterministic
-        let shard2 = table.select_shard(base_key, element_id).unwrap();
+        let shard2 = table.select_shard(key, element_id).unwrap();
         assert_eq!(shard, shard2);
     }
 }

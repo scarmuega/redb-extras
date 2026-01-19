@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use redb::{Database, TableDefinition};
+    use redb::{Database, ReadableDatabase, TableDefinition};
     use redb_extras::roaring::{
         RoaringValue, RoaringValueReadOnlyTable as _, RoaringValueTable as _,
     };
