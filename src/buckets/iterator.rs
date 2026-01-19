@@ -10,6 +10,8 @@ use redb::{MultimapRange, MultimapValue, ReadOnlyMultimapTable, ReadOnlyTable};
 ///
 /// BucketRangeIterator enables efficient traversal of all values for a given
 /// base key across a specified range of sequence values.
+///
+/// Implements `DoubleEndedIterator` for reverse iteration.
 pub struct BucketRangeIterator<V>
 where
     V: redb::Value + 'static,
@@ -19,7 +21,7 @@ where
     base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
-    done: bool,
+    finished: bool,
 }
 
 impl<V> BucketRangeIterator<V>
@@ -46,7 +48,8 @@ where
         let start_bucket = start_sequence / bucket_size;
         let end_bucket = end_sequence / bucket_size;
         let start_key = BucketedKey::new(base_key, start_bucket);
-        let range = table.range(start_key..).map_err(|err| {
+        let end_key = BucketedKey::new(base_key, end_bucket);
+        let range = table.range(start_key..=end_key).map_err(|err| {
             BucketError::IterationError(format!("Failed to create range iterator: {}", err))
         })?;
 
@@ -55,7 +58,7 @@ where
             base_key,
             start_bucket,
             end_bucket,
-            done: false,
+            finished: false,
         })
     }
 
@@ -73,7 +76,7 @@ where
     type Item = Result<V, BucketError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
+        if self.finished {
             return None;
         }
 
@@ -81,23 +84,53 @@ where
             match self.range.next() {
                 Some(Ok((key_guard, value_guard))) => {
                     let key = key_guard.value();
-                    if key.bucket > self.end_bucket {
-                        self.done = true;
-                        return None;
-                    }
                     if key.base_key == self.base_key {
                         return Some(Ok(V::from(value_guard.value())));
                     }
                 }
                 Some(Err(err)) => {
-                    self.done = true;
+                    self.finished = true;
                     return Some(Err(BucketError::IterationError(format!(
                         "Database error during iteration: {}",
                         err
                     ))));
                 }
                 None => {
-                    self.done = true;
+                    self.finished = true;
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+impl<V> DoubleEndedIterator for BucketRangeIterator<V>
+where
+    V: redb::Value + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        loop {
+            match self.range.next_back() {
+                Some(Ok((key_guard, value_guard))) => {
+                    let key = key_guard.value();
+                    if key.base_key == self.base_key {
+                        return Some(Ok(V::from(value_guard.value())));
+                    }
+                }
+                Some(Err(err)) => {
+                    self.finished = true;
+                    return Some(Err(BucketError::IterationError(format!(
+                        "Database error during iteration: {}",
+                        err
+                    ))));
+                }
+                None => {
+                    self.finished = true;
                     return None;
                 }
             }
@@ -109,6 +142,8 @@ where
 ///
 /// This iterator flattens the multimap values, yielding each value in order
 /// across the requested bucket range.
+///
+/// Implements `DoubleEndedIterator` to iterate buckets and values in reverse.
 ///
 /// ```
 /// use redb::{Database, MultimapTableDefinition, ReadableDatabase};
@@ -147,8 +182,9 @@ where
     base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
-    done: bool,
-    current_values: Option<MultimapValue<'static, V>>,
+    finished: bool,
+    front_values: Option<MultimapValue<'static, V>>,
+    back_values: Option<MultimapValue<'static, V>>,
 }
 
 impl<V> BucketRangeMultimapIterator<V>
@@ -175,7 +211,8 @@ where
         let start_bucket = start_sequence / bucket_size;
         let end_bucket = end_sequence / bucket_size;
         let start_key = BucketedKey::new(base_key, start_bucket);
-        let range = table.range(start_key..).map_err(|err| {
+        let end_key = BucketedKey::new(base_key, end_bucket);
+        let range = table.range(start_key..=end_key).map_err(|err| {
             BucketError::IterationError(format!("Failed to create range iterator: {}", err))
         })?;
 
@@ -184,8 +221,9 @@ where
             base_key,
             start_bucket,
             end_bucket,
-            done: false,
-            current_values: None,
+            finished: false,
+            front_values: None,
+            back_values: None,
         })
     }
 
@@ -203,25 +241,25 @@ where
     type Item = Result<V, BucketError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
+        if self.finished {
             return None;
         }
 
         loop {
-            if let Some(values) = self.current_values.as_mut() {
+            if let Some(values) = self.front_values.as_mut() {
                 match values.next() {
                     Some(Ok(value_guard)) => {
                         return Some(Ok(V::from(value_guard.value())));
                     }
                     Some(Err(err)) => {
-                        self.done = true;
+                        self.finished = true;
                         return Some(Err(BucketError::IterationError(format!(
                             "Database error during iteration: {}",
                             err
                         ))));
                     }
                     None => {
-                        self.current_values = None;
+                        self.front_values = None;
                     }
                 }
             }
@@ -229,24 +267,112 @@ where
             match self.range.next() {
                 Some(Ok((key_guard, values))) => {
                     let key = key_guard.value();
-                    if key.bucket > self.end_bucket {
-                        self.done = true;
-                        return None;
-                    }
                     if key.base_key == self.base_key {
-                        self.current_values = Some(values);
+                        self.front_values = Some(values);
                     }
                 }
                 Some(Err(err)) => {
-                    self.done = true;
+                    self.finished = true;
                     return Some(Err(BucketError::IterationError(format!(
                         "Database error during iteration: {}",
                         err
                     ))));
                 }
                 None => {
-                    self.done = true;
-                    return None;
+                    if let Some(values) = self.back_values.as_mut() {
+                        match values.next() {
+                            Some(Ok(value_guard)) => {
+                                return Some(Ok(V::from(value_guard.value())));
+                            }
+                            Some(Err(err)) => {
+                                self.finished = true;
+                                return Some(Err(BucketError::IterationError(format!(
+                                    "Database error during iteration: {}",
+                                    err
+                                ))));
+                            }
+                            None => {
+                                self.back_values = None;
+                            }
+                        }
+                    }
+
+                    if self.front_values.is_none() && self.back_values.is_none() {
+                        self.finished = true;
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<V> DoubleEndedIterator for BucketRangeMultimapIterator<V>
+where
+    V: redb::Key + 'static,
+    for<'b> V: From<V::SelfType<'b>>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        loop {
+            if let Some(values) = self.back_values.as_mut() {
+                match values.next_back() {
+                    Some(Ok(value_guard)) => {
+                        return Some(Ok(V::from(value_guard.value())));
+                    }
+                    Some(Err(err)) => {
+                        self.finished = true;
+                        return Some(Err(BucketError::IterationError(format!(
+                            "Database error during iteration: {}",
+                            err
+                        ))));
+                    }
+                    None => {
+                        self.back_values = None;
+                    }
+                }
+            }
+
+            match self.range.next_back() {
+                Some(Ok((key_guard, values))) => {
+                    let key = key_guard.value();
+                    if key.base_key == self.base_key {
+                        self.back_values = Some(values);
+                    }
+                }
+                Some(Err(err)) => {
+                    self.finished = true;
+                    return Some(Err(BucketError::IterationError(format!(
+                        "Database error during iteration: {}",
+                        err
+                    ))));
+                }
+                None => {
+                    if let Some(values) = self.front_values.as_mut() {
+                        match values.next_back() {
+                            Some(Ok(value_guard)) => {
+                                return Some(Ok(V::from(value_guard.value())));
+                            }
+                            Some(Err(err)) => {
+                                self.finished = true;
+                                return Some(Err(BucketError::IterationError(format!(
+                                    "Database error during iteration: {}",
+                                    err
+                                ))));
+                            }
+                            None => {
+                                self.front_values = None;
+                            }
+                        }
+                    }
+
+                    if self.front_values.is_none() && self.back_values.is_none() {
+                        self.finished = true;
+                        return None;
+                    }
                 }
             }
         }
@@ -389,6 +515,17 @@ mod tests {
                 ]
             );
 
+            let iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 0, 299)?;
+            let values: Vec<String> = iter.rev().collect::<Result<_, _>>()?;
+            assert_eq!(
+                values,
+                vec![
+                    "value_250".to_string(),
+                    "value_150".to_string(),
+                    "value_50".to_string()
+                ]
+            );
+
             let iter = table.bucket_range(&key_builder, 456u64, 0, 299)?;
             let values: Vec<String> = iter.collect::<Result<_, _>>()?;
             assert_eq!(
@@ -430,6 +567,10 @@ mod tests {
 
             let values: Vec<u64> = iter.collect::<Result<_, _>>()?;
             assert_eq!(values, vec![10u64, 20u64, 30u64, 40u64]);
+
+            let iter = BucketRangeMultimapIterator::new(&table, &key_builder, 123u64, 0, 199)?;
+            let values: Vec<u64> = iter.rev().collect::<Result<_, _>>()?;
+            assert_eq!(values, vec![40u64, 30u64, 20u64, 10u64]);
 
             let iter = table.bucket_range(&key_builder, 456u64, 0, 99)?;
             let values: Vec<u64> = iter.collect::<Result<_, _>>()?;
