@@ -1,3 +1,4 @@
+pub mod buckets;
 pub mod error;
 pub mod partition;
 pub mod roaring;
