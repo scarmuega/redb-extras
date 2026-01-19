@@ -20,6 +20,9 @@ pub enum Error {
     /// Errors from the roaring layer (bitmap-specific operations)
     Roaring(crate::roaring::RoaringError),
 
+    /// Errors from the bucket layer (bucket-specific operations)
+    Bucket(crate::buckets::BucketError),
+
     /// Invalid input parameters
     InvalidInput(String),
 
@@ -39,6 +42,12 @@ impl From<crate::roaring::RoaringError> for Error {
     }
 }
 
+impl From<crate::buckets::BucketError> for Error {
+    fn from(err: crate::buckets::BucketError) -> Self {
+        Error::Bucket(err)
+    }
+}
+
 impl From<redb::StorageError> for Error {
     fn from(err: redb::StorageError) -> Self {
         Error::TransactionFailed(format!("Storage error: {}", err))
@@ -50,6 +59,7 @@ impl std::error::Error for Error {
         match self {
             Error::Partition(err) => err.source(),
             Error::Roaring(err) => err.source(),
+            Error::Bucket(err) => err.source(),
             Error::InvalidInput(_) => None,
             Error::TransactionFailed(_) => None,
         }
@@ -61,6 +71,7 @@ impl fmt::Display for Error {
         match self {
             Error::Partition(err) => write!(f, "Partition error: {}", err),
             Error::Roaring(err) => write!(f, "Roaring error: {}", err),
+            Error::Bucket(err) => write!(f, "Bucket error: {}", err),
             Error::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Error::TransactionFailed(msg) => write!(f, "Transaction failed: {}", msg),
         }
