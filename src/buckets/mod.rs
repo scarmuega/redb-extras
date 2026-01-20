@@ -1,8 +1,12 @@
 //! Bucketed storage utility module.
 //!
 //! This module provides bucket-based key grouping for sequence data.
-//! It enables efficient range queries by organizing sequences into
-//! deterministic buckets using configurable bucket sizes.
+//! It enables range queries by organizing sequences into deterministic
+//! buckets using configurable bucket sizes.
+//!
+//! Public bucket iterators perform per-bucket point lookups, so `bucket_range`
+//! scans only the buckets in the requested sequence range without filtering
+//! through unrelated base keys.
 
 use std::fmt;
 

@@ -4,34 +4,36 @@
 
 use crate::buckets::key::{BucketedKey, KeyBuilder};
 use crate::buckets::BucketError;
-use redb::{MultimapRange, MultimapValue, ReadOnlyMultimapTable, ReadOnlyTable};
+use redb::{MultimapValue, ReadOnlyMultimapTable, ReadOnlyTable};
 
 /// Iterator over a range of buckets for a specific base key.
 ///
-/// BucketRangeIterator enables efficient traversal of all values for a given
-/// base key across a specified range of sequence values.
+/// BucketRangeIterator performs point lookups for each bucket in the
+/// requested sequence range, yielding only values that match the base key.
 ///
 /// Implements `DoubleEndedIterator` for reverse iteration.
-pub struct BucketRangeIterator<V>
+pub struct BucketRangeIterator<'a, V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
-    range: redb::Range<'static, BucketedKey<u64>, V>,
+    table: &'a ReadOnlyTable<BucketedKey<u64>, V>,
     base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
+    front_bucket: i64,
+    back_bucket: i64,
     finished: bool,
 }
 
-impl<V> BucketRangeIterator<V>
+impl<'a, V> BucketRangeIterator<'a, V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
     /// Create a new bucket range iterator.
     pub fn new(
-        table: &ReadOnlyTable<BucketedKey<u64>, V>,
+        table: &'a ReadOnlyTable<BucketedKey<u64>, V>,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
@@ -47,17 +49,14 @@ where
         let bucket_size = key_builder.bucket_size();
         let start_bucket = start_sequence / bucket_size;
         let end_bucket = end_sequence / bucket_size;
-        let start_key = BucketedKey::new(base_key, start_bucket);
-        let end_key = BucketedKey::new(base_key, end_bucket);
-        let range = table.range(start_key..=end_key).map_err(|err| {
-            BucketError::IterationError(format!("Failed to create range iterator: {}", err))
-        })?;
 
         Ok(Self {
-            range,
+            table,
             base_key,
             start_bucket,
             end_bucket,
+            front_bucket: start_bucket as i64,
+            back_bucket: end_bucket as i64,
             finished: false,
         })
     }
@@ -68,7 +67,7 @@ where
     }
 }
 
-impl<V> Iterator for BucketRangeIterator<V>
+impl<'a, V> Iterator for BucketRangeIterator<'a, V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -80,31 +79,31 @@ where
             return None;
         }
 
-        loop {
-            match self.range.next() {
-                Some(Ok((key_guard, value_guard))) => {
-                    let key = key_guard.value();
-                    if key.base_key == self.base_key {
-                        return Some(Ok(V::from(value_guard.value())));
-                    }
+        while self.front_bucket <= self.back_bucket {
+            let bucket = self.front_bucket as u64;
+            self.front_bucket += 1;
+
+            match self.table.get(&BucketedKey::new(self.base_key, bucket)) {
+                Ok(Some(value_guard)) => {
+                    return Some(Ok(V::from(value_guard.value())));
                 }
-                Some(Err(err)) => {
+                Ok(None) => continue,
+                Err(err) => {
                     self.finished = true;
                     return Some(Err(BucketError::IterationError(format!(
-                        "Database error during iteration: {}",
+                        "Database error during point lookup: {}",
                         err
                     ))));
                 }
-                None => {
-                    self.finished = true;
-                    return None;
-                }
             }
         }
+
+        self.finished = true;
+        None
     }
 }
 
-impl<V> DoubleEndedIterator for BucketRangeIterator<V>
+impl<'a, V> DoubleEndedIterator for BucketRangeIterator<'a, V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -114,34 +113,34 @@ where
             return None;
         }
 
-        loop {
-            match self.range.next_back() {
-                Some(Ok((key_guard, value_guard))) => {
-                    let key = key_guard.value();
-                    if key.base_key == self.base_key {
-                        return Some(Ok(V::from(value_guard.value())));
-                    }
+        while self.front_bucket <= self.back_bucket {
+            let bucket = self.back_bucket as u64;
+            self.back_bucket -= 1;
+
+            match self.table.get(&BucketedKey::new(self.base_key, bucket)) {
+                Ok(Some(value_guard)) => {
+                    return Some(Ok(V::from(value_guard.value())));
                 }
-                Some(Err(err)) => {
+                Ok(None) => continue,
+                Err(err) => {
                     self.finished = true;
                     return Some(Err(BucketError::IterationError(format!(
-                        "Database error during iteration: {}",
+                        "Database error during point lookup: {}",
                         err
                     ))));
                 }
-                None => {
-                    self.finished = true;
-                    return None;
-                }
             }
         }
+
+        self.finished = true;
+        None
     }
 }
 
 /// Iterator over a range of buckets for a specific base key in multimap tables.
 ///
 /// This iterator flattens the multimap values, yielding each value in order
-/// across the requested bucket range.
+/// across the requested bucket range via per-bucket point lookups.
 ///
 /// Implements `DoubleEndedIterator` to iterate buckets and values in reverse.
 ///
@@ -173,28 +172,30 @@ where
 /// # Ok(())
 /// # }
 /// ```
-pub struct BucketRangeMultimapIterator<V>
+pub struct BucketRangeMultimapIterator<'a, V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
-    range: MultimapRange<'static, BucketedKey<u64>, V>,
+    table: &'a ReadOnlyMultimapTable<BucketedKey<u64>, V>,
     base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
+    front_bucket: i64,
+    back_bucket: i64,
     finished: bool,
-    front_values: Option<MultimapValue<'static, V>>,
-    back_values: Option<MultimapValue<'static, V>>,
+    front_values: Option<MultimapValue<'a, V>>,
+    back_values: Option<MultimapValue<'a, V>>,
 }
 
-impl<V> BucketRangeMultimapIterator<V>
+impl<'a, V> BucketRangeMultimapIterator<'a, V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
     /// Create a new bucket range iterator for a multimap table.
     pub fn new(
-        table: &ReadOnlyMultimapTable<BucketedKey<u64>, V>,
+        table: &'a ReadOnlyMultimapTable<BucketedKey<u64>, V>,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
@@ -210,17 +211,14 @@ where
         let bucket_size = key_builder.bucket_size();
         let start_bucket = start_sequence / bucket_size;
         let end_bucket = end_sequence / bucket_size;
-        let start_key = BucketedKey::new(base_key, start_bucket);
-        let end_key = BucketedKey::new(base_key, end_bucket);
-        let range = table.range(start_key..=end_key).map_err(|err| {
-            BucketError::IterationError(format!("Failed to create range iterator: {}", err))
-        })?;
 
         Ok(Self {
-            range,
+            table,
             base_key,
             start_bucket,
             end_bucket,
+            front_bucket: start_bucket as i64,
+            back_bucket: end_bucket as i64,
             finished: false,
             front_values: None,
             back_values: None,
@@ -233,7 +231,7 @@ where
     }
 }
 
-impl<V> Iterator for BucketRangeMultimapIterator<V>
+impl<'a, V> Iterator for BucketRangeMultimapIterator<'a, V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -254,7 +252,7 @@ where
                     Some(Err(err)) => {
                         self.finished = true;
                         return Some(Err(BucketError::IterationError(format!(
-                            "Database error during iteration: {}",
+                            "Database error during point lookup: {}",
                             err
                         ))));
                     }
@@ -264,50 +262,31 @@ where
                 }
             }
 
-            match self.range.next() {
-                Some(Ok((key_guard, values))) => {
-                    let key = key_guard.value();
-                    if key.base_key == self.base_key {
-                        self.front_values = Some(values);
-                    }
+            if self.front_bucket > self.back_bucket {
+                self.finished = true;
+                return None;
+            }
+
+            let bucket = self.front_bucket as u64;
+            self.front_bucket += 1;
+
+            match self.table.get(&BucketedKey::new(self.base_key, bucket)) {
+                Ok(values) => {
+                    self.front_values = Some(values);
                 }
-                Some(Err(err)) => {
+                Err(err) => {
                     self.finished = true;
                     return Some(Err(BucketError::IterationError(format!(
-                        "Database error during iteration: {}",
+                        "Database error during point lookup: {}",
                         err
                     ))));
-                }
-                None => {
-                    if let Some(values) = self.back_values.as_mut() {
-                        match values.next() {
-                            Some(Ok(value_guard)) => {
-                                return Some(Ok(V::from(value_guard.value())));
-                            }
-                            Some(Err(err)) => {
-                                self.finished = true;
-                                return Some(Err(BucketError::IterationError(format!(
-                                    "Database error during iteration: {}",
-                                    err
-                                ))));
-                            }
-                            None => {
-                                self.back_values = None;
-                            }
-                        }
-                    }
-
-                    if self.front_values.is_none() && self.back_values.is_none() {
-                        self.finished = true;
-                        return None;
-                    }
                 }
             }
         }
     }
 }
 
-impl<V> DoubleEndedIterator for BucketRangeMultimapIterator<V>
+impl<'a, V> DoubleEndedIterator for BucketRangeMultimapIterator<'a, V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -326,7 +305,7 @@ where
                     Some(Err(err)) => {
                         self.finished = true;
                         return Some(Err(BucketError::IterationError(format!(
-                            "Database error during iteration: {}",
+                            "Database error during point lookup: {}",
                             err
                         ))));
                     }
@@ -336,50 +315,34 @@ where
                 }
             }
 
-            match self.range.next_back() {
-                Some(Ok((key_guard, values))) => {
-                    let key = key_guard.value();
-                    if key.base_key == self.base_key {
-                        self.back_values = Some(values);
-                    }
+            if self.front_bucket > self.back_bucket {
+                self.finished = true;
+                return None;
+            }
+
+            let bucket = self.back_bucket as u64;
+            self.back_bucket -= 1;
+
+            match self.table.get(&BucketedKey::new(self.base_key, bucket)) {
+                Ok(values) => {
+                    self.back_values = Some(values);
                 }
-                Some(Err(err)) => {
+                Err(err) => {
                     self.finished = true;
                     return Some(Err(BucketError::IterationError(format!(
-                        "Database error during iteration: {}",
+                        "Database error during point lookup: {}",
                         err
                     ))));
-                }
-                None => {
-                    if let Some(values) = self.front_values.as_mut() {
-                        match values.next_back() {
-                            Some(Ok(value_guard)) => {
-                                return Some(Ok(V::from(value_guard.value())));
-                            }
-                            Some(Err(err)) => {
-                                self.finished = true;
-                                return Some(Err(BucketError::IterationError(format!(
-                                    "Database error during iteration: {}",
-                                    err
-                                ))));
-                            }
-                            None => {
-                                self.front_values = None;
-                            }
-                        }
-                    }
-
-                    if self.front_values.is_none() && self.back_values.is_none() {
-                        self.finished = true;
-                        return None;
-                    }
                 }
             }
         }
     }
 }
 
-/// Extension trait for convenient bucket iteration on read-only tables.
+/// Extension trait for bucket iteration on read-only tables.
+///
+/// Bucket iteration uses per-bucket point lookups for the requested
+/// sequence range, skipping buckets that have no stored value.
 pub trait BucketIterExt<V>
 where
     V: redb::Value + 'static,
@@ -391,7 +354,7 @@ where
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeIterator<V>, BucketError>;
+    ) -> Result<BucketRangeIterator<'_, V>, BucketError>;
 }
 
 impl<V> BucketIterExt<V> for ReadOnlyTable<BucketedKey<u64>, V>
@@ -405,15 +368,15 @@ where
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeIterator<V>, BucketError> {
+    ) -> Result<BucketRangeIterator<'_, V>, BucketError> {
         BucketRangeIterator::new(self, key_builder, base_key, start_sequence, end_sequence)
     }
 }
 
-/// Extension trait for convenient bucket iteration on read-only multimap tables.
+/// Extension trait for bucket iteration on read-only multimap tables.
 ///
 /// Returns a flattened iterator over values for the base key within the
-/// requested bucket range.
+/// requested bucket range, using per-bucket point lookups.
 pub trait BucketMultimapIterExt<V>
 where
     V: redb::Key + 'static,
@@ -425,7 +388,7 @@ where
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeMultimapIterator<V>, BucketError>;
+    ) -> Result<BucketRangeMultimapIterator<'_, V>, BucketError>;
 }
 
 impl<V> BucketMultimapIterExt<V> for ReadOnlyMultimapTable<BucketedKey<u64>, V>
@@ -439,7 +402,7 @@ where
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeMultimapIterator<V>, BucketError> {
+    ) -> Result<BucketRangeMultimapIterator<'_, V>, BucketError> {
         BucketRangeMultimapIterator::new(self, key_builder, base_key, start_sequence, end_sequence)
     }
 }
