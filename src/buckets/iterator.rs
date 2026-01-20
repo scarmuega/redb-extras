@@ -4,7 +4,8 @@
 
 use crate::buckets::key::{BucketedKey, KeyBuilder};
 use crate::buckets::BucketError;
-use redb::{MultimapValue, ReadOnlyMultimapTable, ReadOnlyTable};
+use redb::{ReadOnlyMultimapTable, ReadOnlyTable};
+use std::collections::VecDeque;
 
 /// Iterator over a range of buckets for a specific base key.
 ///
@@ -12,12 +13,12 @@ use redb::{MultimapValue, ReadOnlyMultimapTable, ReadOnlyTable};
 /// requested sequence range, yielding only values that match the base key.
 ///
 /// Implements `DoubleEndedIterator` for reverse iteration.
-pub struct BucketRangeIterator<'a, V>
+pub struct BucketRangeIterator<V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
-    table: &'a ReadOnlyTable<BucketedKey<u64>, V>,
+    table: ReadOnlyTable<BucketedKey<u64>, V>,
     base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
@@ -26,14 +27,14 @@ where
     finished: bool,
 }
 
-impl<'a, V> BucketRangeIterator<'a, V>
+impl<V> BucketRangeIterator<V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
     /// Create a new bucket range iterator.
     pub fn new(
-        table: &'a ReadOnlyTable<BucketedKey<u64>, V>,
+        table: ReadOnlyTable<BucketedKey<u64>, V>,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
@@ -67,7 +68,7 @@ where
     }
 }
 
-impl<'a, V> Iterator for BucketRangeIterator<'a, V>
+impl<V> Iterator for BucketRangeIterator<V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -103,7 +104,7 @@ where
     }
 }
 
-impl<'a, V> DoubleEndedIterator for BucketRangeIterator<'a, V>
+impl<V> DoubleEndedIterator for BucketRangeIterator<V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -172,30 +173,30 @@ where
 /// # Ok(())
 /// # }
 /// ```
-pub struct BucketRangeMultimapIterator<'a, V>
+pub struct BucketRangeMultimapIterator<V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
-    table: &'a ReadOnlyMultimapTable<BucketedKey<u64>, V>,
+    table: ReadOnlyMultimapTable<BucketedKey<u64>, V>,
     base_key: u64,
     start_bucket: u64,
     end_bucket: u64,
     front_bucket: i64,
     back_bucket: i64,
     finished: bool,
-    front_values: Option<MultimapValue<'a, V>>,
-    back_values: Option<MultimapValue<'a, V>>,
+    front_values: Option<VecDeque<V>>,
+    back_values: Option<VecDeque<V>>,
 }
 
-impl<'a, V> BucketRangeMultimapIterator<'a, V>
+impl<V> BucketRangeMultimapIterator<V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
     /// Create a new bucket range iterator for a multimap table.
     pub fn new(
-        table: &'a ReadOnlyMultimapTable<BucketedKey<u64>, V>,
+        table: ReadOnlyMultimapTable<BucketedKey<u64>, V>,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
@@ -231,7 +232,7 @@ where
     }
 }
 
-impl<'a, V> Iterator for BucketRangeMultimapIterator<'a, V>
+impl<V> Iterator for BucketRangeMultimapIterator<V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -245,21 +246,10 @@ where
 
         loop {
             if let Some(values) = self.front_values.as_mut() {
-                match values.next() {
-                    Some(Ok(value_guard)) => {
-                        return Some(Ok(V::from(value_guard.value())));
-                    }
-                    Some(Err(err)) => {
-                        self.finished = true;
-                        return Some(Err(BucketError::IterationError(format!(
-                            "Database error during point lookup: {}",
-                            err
-                        ))));
-                    }
-                    None => {
-                        self.front_values = None;
-                    }
+                if let Some(value) = values.pop_front() {
+                    return Some(Ok(value));
                 }
+                self.front_values = None;
             }
 
             if self.front_bucket > self.back_bucket {
@@ -272,7 +262,25 @@ where
 
             match self.table.get(&BucketedKey::new(self.base_key, bucket)) {
                 Ok(values) => {
-                    self.front_values = Some(values);
+                    let mut collected = VecDeque::new();
+                    for value_result in values {
+                        match value_result {
+                            Ok(value_guard) => {
+                                collected.push_back(V::from(value_guard.value()));
+                            }
+                            Err(err) => {
+                                self.finished = true;
+                                return Some(Err(BucketError::IterationError(format!(
+                                    "Database error during point lookup: {}",
+                                    err
+                                ))));
+                            }
+                        }
+                    }
+                    if collected.is_empty() {
+                        continue;
+                    }
+                    self.front_values = Some(collected);
                 }
                 Err(err) => {
                     self.finished = true;
@@ -286,7 +294,7 @@ where
     }
 }
 
-impl<'a, V> DoubleEndedIterator for BucketRangeMultimapIterator<'a, V>
+impl<V> DoubleEndedIterator for BucketRangeMultimapIterator<V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
@@ -298,21 +306,10 @@ where
 
         loop {
             if let Some(values) = self.back_values.as_mut() {
-                match values.next_back() {
-                    Some(Ok(value_guard)) => {
-                        return Some(Ok(V::from(value_guard.value())));
-                    }
-                    Some(Err(err)) => {
-                        self.finished = true;
-                        return Some(Err(BucketError::IterationError(format!(
-                            "Database error during point lookup: {}",
-                            err
-                        ))));
-                    }
-                    None => {
-                        self.back_values = None;
-                    }
+                if let Some(value) = values.pop_back() {
+                    return Some(Ok(value));
                 }
+                self.back_values = None;
             }
 
             if self.front_bucket > self.back_bucket {
@@ -325,7 +322,25 @@ where
 
             match self.table.get(&BucketedKey::new(self.base_key, bucket)) {
                 Ok(values) => {
-                    self.back_values = Some(values);
+                    let mut collected = VecDeque::new();
+                    for value_result in values {
+                        match value_result {
+                            Ok(value_guard) => {
+                                collected.push_back(V::from(value_guard.value()));
+                            }
+                            Err(err) => {
+                                self.finished = true;
+                                return Some(Err(BucketError::IterationError(format!(
+                                    "Database error during point lookup: {}",
+                                    err
+                                ))));
+                            }
+                        }
+                    }
+                    if collected.is_empty() {
+                        continue;
+                    }
+                    self.back_values = Some(collected);
                 }
                 Err(err) => {
                     self.finished = true;
@@ -343,18 +358,20 @@ where
 ///
 /// Bucket iteration uses per-bucket point lookups for the requested
 /// sequence range, skipping buckets that have no stored value.
+///
+/// This consumes the table handle so the iterator can own it.
 pub trait BucketIterExt<V>
 where
     V: redb::Value + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
     fn bucket_range(
-        &self,
+        self,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeIterator<'_, V>, BucketError>;
+    ) -> Result<BucketRangeIterator<V>, BucketError>;
 }
 
 impl<V> BucketIterExt<V> for ReadOnlyTable<BucketedKey<u64>, V>
@@ -363,12 +380,12 @@ where
     for<'b> V: From<V::SelfType<'b>>,
 {
     fn bucket_range(
-        &self,
+        self,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeIterator<'_, V>, BucketError> {
+    ) -> Result<BucketRangeIterator<V>, BucketError> {
         BucketRangeIterator::new(self, key_builder, base_key, start_sequence, end_sequence)
     }
 }
@@ -377,18 +394,20 @@ where
 ///
 /// Returns a flattened iterator over values for the base key within the
 /// requested bucket range, using per-bucket point lookups.
+///
+/// This consumes the table handle so the iterator can own it.
 pub trait BucketMultimapIterExt<V>
 where
     V: redb::Key + 'static,
     for<'b> V: From<V::SelfType<'b>>,
 {
     fn bucket_range(
-        &self,
+        self,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeMultimapIterator<'_, V>, BucketError>;
+    ) -> Result<BucketRangeMultimapIterator<V>, BucketError>;
 }
 
 impl<V> BucketMultimapIterExt<V> for ReadOnlyMultimapTable<BucketedKey<u64>, V>
@@ -397,12 +416,12 @@ where
     for<'b> V: From<V::SelfType<'b>>,
 {
     fn bucket_range(
-        &self,
+        self,
         key_builder: &KeyBuilder,
         base_key: u64,
         start_sequence: u64,
         end_sequence: u64,
-    ) -> Result<BucketRangeMultimapIterator<'_, V>, BucketError> {
+    ) -> Result<BucketRangeMultimapIterator<V>, BucketError> {
         BucketRangeMultimapIterator::new(self, key_builder, base_key, start_sequence, end_sequence)
     }
 }
@@ -454,20 +473,36 @@ mod tests {
         // Test that we can create bucket range iterators
         {
             let read_txn = db.begin_read()?;
-            let table = read_txn.open_table(TEST_TABLE)?;
-            let iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 0, 199)?;
+            let iter = BucketRangeIterator::new(
+                read_txn.open_table(TEST_TABLE)?,
+                &key_builder,
+                123u64,
+                0,
+                199,
+            )?;
             assert_eq!(iter.bucket_range(), (0, 1));
 
             // Test invalid range
-            let invalid_iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 200, 100);
+            let invalid_iter = BucketRangeIterator::new(
+                read_txn.open_table(TEST_TABLE)?,
+                &key_builder,
+                123u64,
+                200,
+                100,
+            );
             assert!(invalid_iter.is_err());
         }
 
         // Test value iteration and base key filtering
         {
             let read_txn = db.begin_read()?;
-            let table = read_txn.open_table(TEST_TABLE)?;
-            let iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 0, 299)?;
+            let iter = BucketRangeIterator::new(
+                read_txn.open_table(TEST_TABLE)?,
+                &key_builder,
+                123u64,
+                0,
+                299,
+            )?;
             let values: Vec<String> = iter.collect::<Result<_, _>>()?;
             assert_eq!(
                 values,
@@ -478,7 +513,13 @@ mod tests {
                 ]
             );
 
-            let iter = BucketRangeIterator::new(&table, &key_builder, 123u64, 0, 299)?;
+            let iter = BucketRangeIterator::new(
+                read_txn.open_table(TEST_TABLE)?,
+                &key_builder,
+                123u64,
+                0,
+                299,
+            )?;
             let values: Vec<String> = iter.rev().collect::<Result<_, _>>()?;
             assert_eq!(
                 values,
@@ -489,7 +530,10 @@ mod tests {
                 ]
             );
 
-            let iter = table.bucket_range(&key_builder, 456u64, 0, 299)?;
+            let iter =
+                read_txn
+                    .open_table(TEST_TABLE)?
+                    .bucket_range(&key_builder, 456u64, 0, 299)?;
             let values: Vec<String> = iter.collect::<Result<_, _>>()?;
             assert_eq!(
                 values,
@@ -524,18 +568,34 @@ mod tests {
 
         {
             let read_txn = db.begin_read()?;
-            let table = read_txn.open_multimap_table(TEST_MULTIMAP)?;
-            let iter = BucketRangeMultimapIterator::new(&table, &key_builder, 123u64, 0, 199)?;
+            let iter = BucketRangeMultimapIterator::new(
+                read_txn.open_multimap_table(TEST_MULTIMAP)?,
+                &key_builder,
+                123u64,
+                0,
+                199,
+            )?;
             assert_eq!(iter.bucket_range(), (0, 1));
 
             let values: Vec<u64> = iter.collect::<Result<_, _>>()?;
             assert_eq!(values, vec![10u64, 20u64, 30u64, 40u64]);
 
-            let iter = BucketRangeMultimapIterator::new(&table, &key_builder, 123u64, 0, 199)?;
+            let iter = BucketRangeMultimapIterator::new(
+                read_txn.open_multimap_table(TEST_MULTIMAP)?,
+                &key_builder,
+                123u64,
+                0,
+                199,
+            )?;
             let values: Vec<u64> = iter.rev().collect::<Result<_, _>>()?;
             assert_eq!(values, vec![40u64, 30u64, 20u64, 10u64]);
 
-            let iter = table.bucket_range(&key_builder, 456u64, 0, 99)?;
+            let iter = read_txn.open_multimap_table(TEST_MULTIMAP)?.bucket_range(
+                &key_builder,
+                456u64,
+                0,
+                99,
+            )?;
             let values: Vec<u64> = iter.collect::<Result<_, _>>()?;
             assert_eq!(values, vec![99u64, 100u64]);
         }
