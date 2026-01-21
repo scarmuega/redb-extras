@@ -23,6 +23,9 @@ pub enum Error {
     /// Errors from the bucket layer (bucket-specific operations)
     Bucket(crate::buckets::BucketError),
 
+    /// Errors from the database copy utilities
+    DbCopy(crate::dbcopy::DbCopyError),
+
     /// Invalid input parameters
     InvalidInput(String),
 
@@ -48,6 +51,12 @@ impl From<crate::buckets::BucketError> for Error {
     }
 }
 
+impl From<crate::dbcopy::DbCopyError> for Error {
+    fn from(err: crate::dbcopy::DbCopyError) -> Self {
+        Error::DbCopy(err)
+    }
+}
+
 impl From<redb::StorageError> for Error {
     fn from(err: redb::StorageError) -> Self {
         Error::TransactionFailed(format!("Storage error: {}", err))
@@ -60,6 +69,7 @@ impl std::error::Error for Error {
             Error::Partition(err) => err.source(),
             Error::Roaring(err) => err.source(),
             Error::Bucket(err) => err.source(),
+            Error::DbCopy(err) => err.source(),
             Error::InvalidInput(_) => None,
             Error::TransactionFailed(_) => None,
         }
@@ -72,6 +82,7 @@ impl fmt::Display for Error {
             Error::Partition(err) => write!(f, "Partition error: {}", err),
             Error::Roaring(err) => write!(f, "Roaring error: {}", err),
             Error::Bucket(err) => write!(f, "Bucket error: {}", err),
+            Error::DbCopy(err) => write!(f, "Database copy error: {}", err),
             Error::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Error::TransactionFailed(msg) => write!(f, "Transaction failed: {}", msg),
         }
