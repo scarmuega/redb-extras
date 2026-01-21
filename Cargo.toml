@@ -1,6 +1,6 @@
 [package]
 name = "redb-extras"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.70"
 description = "Use-case agnostic utilities for redb, featuring sharded roaring bitmap tables"
