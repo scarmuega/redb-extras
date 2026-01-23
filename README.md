@@ -1,58 +1,107 @@
 # redb-extras
 
-Use-case agnostic utilities for [redb](https://github.com/ciberred/redb), featuring sharded roaring bitmap tables.
+Use-case agnostic utilities built on top of [redb](https://github.com/ciberred/redb).
+Each utility is standalone and can be adopted independently.
 
-## Overview
+## Database copy (dbcopy)
 
-`redb-extras` provides focused storage primitives that solve common low-level problems while maintaining explicit, synchronous behavior and integrating naturally with redb's transaction model.
+Copy selected tables between databases using an explicit plan. The destination
+must not already contain the tables being copied.
 
-### Main Feature: Partitioned Roaring Bitmap Tables
+```rust
+use redb::{Database, TableDefinition};
+use redb_extras::dbcopy::{copy_database, CopyPlan};
 
-A key-value store where:
-- **Keys** are opaque byte slices (you control the structure)
-- **Values** are Roaring bitmaps (`RoaringTreemap<u64>`)
-- **Automatic sharding** spreads writes for hot keys
-- **Segment-based storage** controls write amplification
-- **KV-like mental model** - sharding is invisible to callers
+const USERS: TableDefinition<&str, u64> = TableDefinition::new("users");
 
-## Quick Start
+let source = Database::create("source.redb")?;
+let destination = Database::create("destination.redb")?;
+
+let plan = CopyPlan::new().table(USERS);
+copy_database(&source, &destination, &plan)?;
+```
+
+## Partitioned storage (partition)
+
+Generic sharded + segmented storage that manages segment tables and metadata.
+You can write raw segments yourself or layer a value handler on top.
 
 ```rust
 use redb::Database;
-use redb_extras::PartitionedRoaringTable;
+use redb_extras::partition::{PartitionConfig, PartitionedTable, PartitionedWrite};
 
-// Create database and table
-let db = Database::create("example.db")?;
-let table = PartitionedRoaringTable::new("sessions", Default::default());
+let db = Database::create("example.redb")?;
+let config = PartitionConfig::new(16, 64 * 1024, true)?;
+let table: PartitionedTable<()> = PartitionedTable::new("events", config);
+table.ensure_table_exists(&db)?;
 
-// Insert data
+let mut write_txn = db.begin_write()?;
+let writer = PartitionedWrite::new(&table, &mut write_txn);
+let shard = table.select_shard(b"user_123", 42)?;
+writer.update_head_segment(b"user_123", shard, b"payload")?;
+write_txn.commit()?;
+```
+
+## Roaring bitmap values (roaring)
+
+Roaring bitmap value helpers plus extension traits to read/write bitmap values
+directly from redb tables.
+
+```rust
+use redb::{Database, TableDefinition};
+use redb_extras::roaring::{RoaringValue, RoaringValueReadOnlyTable, RoaringValueTable};
+
+const SESSIONS: TableDefinition<&str, RoaringValue> = TableDefinition::new("sessions");
+
+let db = Database::create("example.redb")?;
 let mut write_txn = db.begin_write()?;
 {
-    let mut writer = table.write(&mut write_txn);
-    writer.insert_member(b"user_123", 1001)?;
-    writer.insert_member(b"user_123", 1002)?;
+    let mut table = write_txn.open_table(SESSIONS)?;
+    table.insert_member("user_123", 1001)?;
+    table.insert_member("user_123", 1002)?;
 }
 write_txn.commit()?;
 
-// Read data
 let read_txn = db.begin_read()?;
-let reader = table.read(&read_txn);
-let sessions = reader.get(b"user_123")?;
-println!("User has {} sessions", sessions.len());
+let table = read_txn.open_table(SESSIONS)?;
+let bitmap = table.get_bitmap("user_123")?;
+println!("{}", bitmap.len());
 ```
 
-## Features
+## Bucketed keys (key_buckets)
 
-- **Bounded write cost** - avoid rewriting ever-growing bitmap blobs
-- **Deterministic sharding** - consistent element placement across shards  
-- **Size-based segmentation** - segments roll when serialized size exceeds threshold
-- **Opaque keys** - you control key structure and semantics
-- **Explicit transactions** - no background threads, fully synchronous
-- **No domain semantics** - pure storage primitive for higher-level systems
+Bucketed keys attach a bucket prefix to a base key for efficient range scans.
+Current helpers are specialized for `u64` base keys.
 
-### Table Buckets Utility
+```rust
+use redb::{Database, TableDefinition};
+use redb_extras::key_buckets::{BucketIterExt, BucketedKey, KeyBuilder};
 
-Use table-per-bucket storage when you want bucketed sequences without key prefixes:
+const EVENTS: TableDefinition<BucketedKey<u64>, String> = TableDefinition::new("events");
+
+let db = Database::create("example.redb")?;
+let key_builder = KeyBuilder::new(100)?;
+
+let mut write_txn = db.begin_write()?;
+{
+    let mut table = write_txn.open_table(EVENTS)?;
+    table.insert(key_builder.bucketed_key(42u64, 10), "a".to_string())?;
+    table.insert(key_builder.bucketed_key(42u64, 110), "b".to_string())?;
+}
+write_txn.commit()?;
+
+let read_txn = db.begin_read()?;
+let table = read_txn.open_table(EVENTS)?;
+let values: Vec<String> = table
+    .bucket_range(&key_builder, 42u64, 0, 199)?
+    .collect::<Result<_, _>>()?;
+```
+
+## Table buckets (table_buckets)
+
+Bucket-per-table storage for sequences where you want table-level separation
+instead of key prefixes. The builder leaks table name strings to satisfy redb's
+`'static` table name requirement.
 
 ```rust
 use redb::Database;
@@ -61,49 +110,24 @@ use redb_extras::table_buckets::{TableBucketBuilder, TableBucketIterExt};
 let db = Database::create("example.redb")?;
 let builder = TableBucketBuilder::new(100, "events")?;
 
+let mut write_txn = db.begin_write()?;
+{
+    let mut table = write_txn.open_table(builder.table_definition::<u64, String>(0))?;
+    table.insert(42u64, "a".to_string())?;
+}
+write_txn.commit()?;
+
 let read_txn = db.begin_read()?;
 let values: Vec<String> = read_txn
-    .table_bucket_range(&builder, 42u64, 0, 199)?
+    .table_bucket_range(&builder, 42u64, 0, 99)?
     .collect::<Result<_, _>>()?;
 ```
-
-## Configuration
-
-```rust
-use redb_extras::{RoaringConfig, PartitionConfig};
-
-let config = RoaringConfig::new(
-    PartitionConfig::new(
-        16,              // 16 shards for write distribution
-        64 * 1024,       // 64KB segments for balance
-        true,            // Use meta table for O(1) head discovery
-    )?
-);
-```
-
-## Use Cases
-
-- Session tracking systems
-- Real-time analytics indices
-- Event sourcing append-only logs
-- Large-scale set operations
-- Any scenario needing efficient bitmap storage with controlled write amplification
-
-## Architecture
-
-The library uses a layered design:
-
-- **Facade Layer** (`PartitionedRoaringTable`): High-level opinionated API
-- **Partition Layer**: Generic sharded + segmented byte storage
-- **Value Layer**: Roaring-specific value handling and optimization
-
-This separation allows advanced users to use lower-level primitives directly when the facade is too restrictive.
 
 ## Dependencies
 
 - `redb` - Embedded B-tree database with ACID transactions
-- `roaring` - Fast compressed bitmap implementation
-- `xxhash-rust` - High-speed hashing for shard selection
+- `roaring` - Compressed bitmap implementation
+- `xxhash-rust` - Hashing for shard selection
 
 ## License
 
