@@ -2,7 +2,7 @@
 //!
 //! Provides KeyBuilder for configuration and BucketedKey for storage.
 
-use crate::buckets::BucketError;
+use crate::key_buckets::BucketError;
 use redb::{Key, Value};
 use std::cmp::Ordering;
 use std::fmt::Debug;
@@ -143,7 +143,7 @@ impl Value for BucketedKey<u64> {
     }
 
     fn type_name() -> redb::TypeName {
-        redb::TypeName::new("redb_extras::buckets::BucketedKey<u64>")
+        redb::TypeName::new("redb_extras::key_buckets::BucketedKey<u64>")
     }
 }
 

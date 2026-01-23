@@ -21,7 +21,7 @@ pub enum Error {
     Roaring(crate::roaring::RoaringError),
 
     /// Errors from the bucket layer (bucket-specific operations)
-    Bucket(crate::buckets::BucketError),
+    Bucket(crate::key_buckets::BucketError),
 
     /// Errors from the database copy utilities
     DbCopy(crate::dbcopy::DbCopyError),
@@ -45,8 +45,8 @@ impl From<crate::roaring::RoaringError> for Error {
     }
 }
 
-impl From<crate::buckets::BucketError> for Error {
-    fn from(err: crate::buckets::BucketError) -> Self {
+impl From<crate::key_buckets::BucketError> for Error {
+    fn from(err: crate::key_buckets::BucketError) -> Self {
         Error::Bucket(err)
     }
 }

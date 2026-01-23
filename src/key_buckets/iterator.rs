@@ -2,8 +2,8 @@
 //!
 //! Provides efficient iteration over bucket ranges for specific base keys.
 
-use crate::buckets::key::{BucketedKey, KeyBuilder};
-use crate::buckets::BucketError;
+use crate::key_buckets::key::{BucketedKey, KeyBuilder};
+use crate::key_buckets::BucketError;
 use redb::{ReadOnlyMultimapTable, ReadOnlyTable};
 use std::collections::VecDeque;
 
@@ -147,7 +147,7 @@ where
 ///
 /// ```
 /// use redb::{Database, MultimapTableDefinition, ReadableDatabase};
-/// use redb_extras::buckets::{BucketMultimapIterExt, BucketedKey, KeyBuilder};
+/// use redb_extras::key_buckets::{BucketMultimapIterExt, BucketedKey, KeyBuilder};
 ///
 /// const TABLE: MultimapTableDefinition<'static, BucketedKey<u64>, u64> =
 ///     MultimapTableDefinition::new("bucketed_values");

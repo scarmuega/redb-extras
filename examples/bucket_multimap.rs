@@ -1,7 +1,7 @@
 //! Minimal example for bucketed multimap iteration.
 
 use redb::{Database, MultimapTableDefinition, ReadableDatabase};
-use redb_extras::buckets::{BucketMultimapIterExt, BucketedKey, KeyBuilder};
+use redb_extras::key_buckets::{BucketMultimapIterExt, BucketedKey, KeyBuilder};
 
 const MULTIMAP: MultimapTableDefinition<'static, BucketedKey<u64>, u64> =
     MultimapTableDefinition::new("bucketed_multimap");

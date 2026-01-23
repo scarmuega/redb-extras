@@ -50,6 +50,23 @@ println!("User has {} sessions", sessions.len());
 - **Explicit transactions** - no background threads, fully synchronous
 - **No domain semantics** - pure storage primitive for higher-level systems
 
+### Table Buckets Utility
+
+Use table-per-bucket storage when you want bucketed sequences without key prefixes:
+
+```rust
+use redb::Database;
+use redb_extras::table_buckets::{TableBucketBuilder, TableBucketIterExt};
+
+let db = Database::create("example.redb")?;
+let builder = TableBucketBuilder::new(100, "events")?;
+
+let read_txn = db.begin_read()?;
+let values: Vec<String> = read_txn
+    .table_bucket_range(&builder, 42u64, 0, 199)?
+    .collect::<Result<_, _>>()?;
+```
+
 ## Configuration
 
 ```rust
