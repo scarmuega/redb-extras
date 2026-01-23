@@ -4,7 +4,7 @@
 //! stored in partitioned segments.
 
 use super::RoaringError;
-use crate::Result;
+use crate::{MergeableValue, Result};
 use redb::Value as RedbValue;
 use roaring::RoaringTreemap;
 
@@ -184,6 +184,18 @@ impl From<RoaringTreemap> for RoaringValue {
 impl Default for RoaringValue {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+impl MergeableValue for RoaringValue {
+    fn merge(existing: Option<Self>, incoming: Self) -> Self {
+        match existing {
+            Some(mut existing) => {
+                existing.bitmap.extend(incoming.bitmap.into_iter());
+                existing
+            }
+            None => incoming,
+        }
     }
 }
 

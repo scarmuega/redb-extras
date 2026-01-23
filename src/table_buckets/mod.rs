@@ -4,6 +4,7 @@
 //! mapping each bucket to its own redb table. It mirrors the bucketed key
 //! approach but uses table-per-bucket instead of key prefixes.
 
+use crate::MergeableValue;
 use redb::{
     Key, MultimapTableDefinition, ReadableTable, TableDefinition, TableHandle, Value,
     WriteTransaction,
@@ -20,12 +21,6 @@ pub use iterator::{
     TableBucketRangeMultimapIterator,
 };
 
-/// Trait for merging values when consolidating bucket tables.
-pub trait MergeableValue: Sized {
-    /// Merge an incoming value with an existing value (if any).
-    fn merge(existing: Option<Self>, incoming: Self) -> Self;
-}
-
 /// Builder for table bucket configuration and name resolution.
 #[derive(Debug, Clone)]
 pub struct TableBucketBuilder {
@@ -36,7 +31,8 @@ pub struct TableBucketBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::{MergeableValue, TableBucketBuilder};
+    use super::TableBucketBuilder;
+    use crate::MergeableValue;
     use redb::{Database, ReadableDatabase, TableDefinition, TableError};
     use tempfile::NamedTempFile;
 
