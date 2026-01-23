@@ -7,7 +7,7 @@ use roaring::RoaringTreemap;
 impl RoaringValueReadOnlyTable<'_, &[u8]> for redb::ReadOnlyTable<&'static [u8], RoaringValue> {
     fn get_bitmap(&self, key: &[u8]) -> Result<RoaringTreemap> {
         if let Some(guard) = self.get(key)? {
-            Ok(guard.value().to_owned())
+            Ok(guard.value().bitmap().to_owned())
         } else {
             Ok(RoaringTreemap::new())
         }
@@ -19,7 +19,7 @@ impl<'txn> RoaringValueReadOnlyTable<'txn, &[u8]>
 {
     fn get_bitmap(&self, key: &[u8]) -> Result<RoaringTreemap> {
         if let Some(guard) = self.get(key)? {
-            Ok(guard.value().to_owned())
+            Ok(guard.value().bitmap().to_owned())
         } else {
             Ok(RoaringTreemap::new())
         }
@@ -36,7 +36,8 @@ impl<'txn> RoaringValueTable<'txn, &[u8]> for redb::Table<'txn, &'static [u8], R
         bitmap.insert(member);
 
         // Store the updated bitmap
-        Self::insert(self, key, &bitmap)?;
+        let value = RoaringValue::from(bitmap);
+        Self::insert(self, key, &value)?;
 
         Ok(())
     }
@@ -52,7 +53,8 @@ impl<'txn> RoaringValueTable<'txn, &[u8]> for redb::Table<'txn, &'static [u8], R
         if bitmap.is_empty() {
             Self::remove(self, key)?;
         } else {
-            Self::insert(self, key, &bitmap)?;
+            let value = RoaringValue::from(bitmap);
+            Self::insert(self, key, &value)?;
         }
 
         Ok(())
@@ -62,7 +64,8 @@ impl<'txn> RoaringValueTable<'txn, &[u8]> for redb::Table<'txn, &'static [u8], R
         if bitmap.is_empty() {
             Self::remove(self, key)?;
         } else {
-            Self::insert(self, key, &bitmap)?;
+            let value = RoaringValue::from(bitmap);
+            Self::insert(self, key, &value)?;
         }
         Ok(())
     }
@@ -78,7 +81,7 @@ impl<'txn> RoaringValueTable<'txn, &[u8]> for redb::Table<'txn, &'static [u8], R
 impl RoaringValueReadOnlyTable<'_, &str> for redb::ReadOnlyTable<&'static str, RoaringValue> {
     fn get_bitmap(&self, key: &str) -> Result<RoaringTreemap> {
         if let Some(guard) = self.get(key)? {
-            Ok(guard.value().to_owned())
+            Ok(guard.value().bitmap().to_owned())
         } else {
             Ok(RoaringTreemap::new())
         }
@@ -88,7 +91,7 @@ impl RoaringValueReadOnlyTable<'_, &str> for redb::ReadOnlyTable<&'static str, R
 impl<'txn> RoaringValueReadOnlyTable<'txn, &str> for redb::Table<'txn, &'static str, RoaringValue> {
     fn get_bitmap(&self, key: &str) -> Result<RoaringTreemap> {
         if let Some(guard) = self.get(key)? {
-            Ok(guard.value().to_owned())
+            Ok(guard.value().bitmap().to_owned())
         } else {
             Ok(RoaringTreemap::new())
         }
@@ -105,7 +108,8 @@ impl<'txn> RoaringValueTable<'txn, &str> for redb::Table<'txn, &'static str, Roa
         bitmap.insert(member);
 
         // Store the updated bitmap
-        Self::insert(self, key, &bitmap)?;
+        let value = RoaringValue::from(bitmap);
+        Self::insert(self, key, &value)?;
 
         Ok(())
     }
@@ -121,7 +125,8 @@ impl<'txn> RoaringValueTable<'txn, &str> for redb::Table<'txn, &'static str, Roa
         if bitmap.is_empty() {
             Self::remove(self, key)?;
         } else {
-            Self::insert(self, key, &bitmap)?;
+            let value = RoaringValue::from(bitmap);
+            Self::insert(self, key, &value)?;
         }
 
         Ok(())
@@ -131,7 +136,8 @@ impl<'txn> RoaringValueTable<'txn, &str> for redb::Table<'txn, &'static str, Roa
         if bitmap.is_empty() {
             Self::remove(self, key)?;
         } else {
-            Self::insert(self, key, &bitmap)?;
+            let value = RoaringValue::from(bitmap);
+            Self::insert(self, key, &value)?;
         }
         Ok(())
     }
@@ -146,7 +152,7 @@ impl<'txn> RoaringValueTable<'txn, &str> for redb::Table<'txn, &'static str, Roa
 impl RoaringValueReadOnlyTable<'_, u64> for redb::ReadOnlyTable<u64, RoaringValue> {
     fn get_bitmap(&self, key: u64) -> Result<RoaringTreemap> {
         if let Some(guard) = self.get(key)? {
-            Ok(guard.value().to_owned())
+            Ok(guard.value().bitmap().to_owned())
         } else {
             Ok(RoaringTreemap::new())
         }
@@ -156,7 +162,7 @@ impl RoaringValueReadOnlyTable<'_, u64> for redb::ReadOnlyTable<u64, RoaringValu
 impl<'txn> RoaringValueReadOnlyTable<'txn, u64> for redb::Table<'txn, u64, RoaringValue> {
     fn get_bitmap(&self, key: u64) -> Result<RoaringTreemap> {
         if let Some(guard) = self.get(key)? {
-            Ok(guard.value().to_owned())
+            Ok(guard.value().bitmap().to_owned())
         } else {
             Ok(RoaringTreemap::new())
         }
@@ -173,7 +179,8 @@ impl<'txn> RoaringValueTable<'txn, u64> for redb::Table<'txn, u64, RoaringValue>
         bitmap.insert(member);
 
         // Store the updated bitmap
-        Self::insert(self, key, &bitmap)?;
+        let value = RoaringValue::from(bitmap);
+        Self::insert(self, key, &value)?;
 
         Ok(())
     }
@@ -189,7 +196,8 @@ impl<'txn> RoaringValueTable<'txn, u64> for redb::Table<'txn, u64, RoaringValue>
         if bitmap.is_empty() {
             Self::remove(self, key)?;
         } else {
-            Self::insert(self, key, &bitmap)?;
+            let value = RoaringValue::from(bitmap);
+            Self::insert(self, key, &value)?;
         }
 
         Ok(())
@@ -199,7 +207,8 @@ impl<'txn> RoaringValueTable<'txn, u64> for redb::Table<'txn, u64, RoaringValue>
         if bitmap.is_empty() {
             Self::remove(self, key)?;
         } else {
-            Self::insert(self, key, &bitmap)?;
+            let value = RoaringValue::from(bitmap);
+            Self::insert(self, key, &value)?;
         }
         Ok(())
     }

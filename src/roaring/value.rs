@@ -8,20 +8,44 @@ use crate::Result;
 use redb::Value as RedbValue;
 use roaring::RoaringTreemap;
 
-/// Value handler for RoaringTreemap in partitioned tables.
+/// Value type for RoaringTreemap in partitioned tables.
 ///
 /// This struct provides the bridge between the generic partitioned storage
 /// and roaring-specific value operations. It handles:
 /// - Serialization/deserialization of RoaringTreemap
 /// - Size queries for segment rolling decisions
 /// - Version management for future migrations
-#[derive(Debug, Clone)]
-pub struct RoaringValue;
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoaringValue {
+    bitmap: RoaringTreemap,
+}
 
 impl RoaringValue {
-    /// Creates a new RoaringValue handler.
-    pub fn new() -> Self {
-        Self
+    /// Creates a new RoaringValue from an existing bitmap.
+    pub fn new(bitmap: RoaringTreemap) -> Self {
+        Self { bitmap }
+    }
+
+    /// Creates an empty RoaringValue.
+    pub fn empty() -> Self {
+        Self {
+            bitmap: RoaringTreemap::new(),
+        }
+    }
+
+    /// Returns a reference to the underlying bitmap.
+    pub fn bitmap(&self) -> &RoaringTreemap {
+        &self.bitmap
+    }
+
+    /// Returns a mutable reference to the underlying bitmap.
+    pub fn bitmap_mut(&mut self) -> &mut RoaringTreemap {
+        &mut self.bitmap
+    }
+
+    /// Consumes the value and returns the underlying bitmap.
+    pub fn into_bitmap(self) -> RoaringTreemap {
+        self.bitmap
     }
 
     /// Encodes a RoaringTreemap into storage format.
@@ -31,7 +55,18 @@ impl RoaringValue {
     ///
     /// # Returns
     /// Encoded bytes ready for storage
-    pub fn encode(&self, bitmap: &RoaringTreemap) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        Self::encode_bitmap(&self.bitmap)
+    }
+
+    /// Encodes a RoaringTreemap into storage format.
+    ///
+    /// # Arguments
+    /// * `bitmap` - The roaring bitmap to encode
+    ///
+    /// # Returns
+    /// Encoded bytes ready for storage
+    pub fn encode_bitmap(bitmap: &RoaringTreemap) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         bitmap
             .serialize_into(&mut buf)
@@ -45,14 +80,14 @@ impl RoaringValue {
         Ok(result)
     }
 
-    /// Decodes storage bytes into a RoaringTreemap.
+    /// Decodes storage bytes into a RoaringValue.
     ///
     /// # Arguments
     /// * `data` - The encoded value bytes
     ///
     /// # Returns
-    /// Decoded RoaringTreemap
-    pub fn decode(&self, data: &[u8]) -> Result<RoaringTreemap> {
+    /// Decoded RoaringValue
+    pub fn decode(data: &[u8]) -> Result<Self> {
         if data.is_empty() {
             return Err(RoaringError::InvalidBitmap("Empty data".to_string()).into());
         }
@@ -66,8 +101,9 @@ impl RoaringValue {
             );
         }
 
-        Ok(RoaringTreemap::deserialize_from(bitmap_bytes)
-            .map_err(|e| RoaringError::SerializationFailed(e.to_string()))?)
+        let bitmap = RoaringTreemap::deserialize_from(bitmap_bytes)
+            .map_err(|e| RoaringError::SerializationFailed(e.to_string()))?;
+        Ok(Self { bitmap })
     }
 
     /// Gets the serialized size of a RoaringTreemap.
@@ -80,7 +116,21 @@ impl RoaringValue {
     ///
     /// # Returns
     /// Serialized size in bytes (including version prefix)
-    pub fn get_serialized_size(&self, bitmap: &RoaringTreemap) -> Result<usize> {
+    pub fn get_serialized_size(&self) -> Result<usize> {
+        Self::get_serialized_size_for(&self.bitmap)
+    }
+
+    /// Gets the serialized size of a RoaringTreemap.
+    ///
+    /// This size is used by the partition layer to determine when to roll
+    /// segments based on the configured maximum segment size.
+    ///
+    /// # Arguments
+    /// * `bitmap` - The roaring bitmap to measure
+    ///
+    /// # Returns
+    /// Serialized size in bytes (including version prefix)
+    pub fn get_serialized_size_for(bitmap: &RoaringTreemap) -> Result<usize> {
         let mut buf = Vec::new();
         bitmap
             .serialize_into(&mut buf)
@@ -90,43 +140,56 @@ impl RoaringValue {
         Ok(1 + buf.len())
     }
 
-    /// Creates an empty RoaringTreemap.
-    pub fn empty(&self) -> RoaringTreemap {
-        RoaringTreemap::new()
-    }
-
-    /// Creates a RoaringTreemap from a single value.
-    pub fn from_single(&self, value: u64) -> RoaringTreemap {
+    /// Creates a RoaringValue from a single value.
+    pub fn from_single(value: u64) -> Self {
         let mut bitmap = RoaringTreemap::new();
         bitmap.insert(value);
-        bitmap
+        Self { bitmap }
     }
 
-    /// Creates a RoaringTreemap from an iterator of values.
-    pub fn from_iter<I>(&self, iter: I) -> RoaringTreemap
+    /// Creates a RoaringValue from an iterator of values.
+    pub fn from_iter<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = u64>,
     {
         let values: Vec<u64> = iter.into_iter().collect();
-        RoaringTreemap::from_sorted_iter(values.iter().cloned()).unwrap_or_else(|_| {
-            let mut bitmap = RoaringTreemap::new();
-            for value in &values {
-                bitmap.insert(*value);
-            }
-            bitmap
-        })
+        let bitmap =
+            RoaringTreemap::from_sorted_iter(values.iter().cloned()).unwrap_or_else(|_| {
+                let mut bitmap = RoaringTreemap::new();
+                for value in &values {
+                    bitmap.insert(*value);
+                }
+                bitmap
+            });
+        Self { bitmap }
+    }
+
+    /// Returns the number of members in the bitmap.
+    pub fn len(&self) -> u64 {
+        self.bitmap.len()
+    }
+
+    /// Returns true if the bitmap is empty.
+    pub fn is_empty(&self) -> bool {
+        self.bitmap.is_empty()
+    }
+}
+
+impl From<RoaringTreemap> for RoaringValue {
+    fn from(value: RoaringTreemap) -> Self {
+        Self { bitmap: value }
     }
 }
 
 impl Default for RoaringValue {
     fn default() -> Self {
-        Self::new()
+        Self::empty()
     }
 }
 
 impl RedbValue for RoaringValue {
     type SelfType<'a>
-        = RoaringTreemap
+        = RoaringValue
     where
         Self: 'a;
     type AsBytes<'a>
@@ -142,18 +205,14 @@ impl RedbValue for RoaringValue {
     where
         Self: 'a,
     {
-        let handler = RoaringValue::new();
-        handler
-            .decode(data)
-            .unwrap_or_else(|_| RoaringTreemap::new())
+        RoaringValue::decode(data).unwrap_or_else(|_| RoaringValue::empty())
     }
 
     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
     where
         Self: 'b,
     {
-        let handler = RoaringValue::new();
-        handler.encode(value).unwrap_or_else(|_| Vec::new())
+        value.encode().unwrap_or_else(|_| Vec::new())
     }
 
     fn type_name() -> redb::TypeName {
@@ -167,83 +226,80 @@ mod tests {
 
     #[test]
     fn test_encode_decode_roundtrip() {
-        let handler = RoaringValue::new();
         let mut bitmap = RoaringTreemap::new();
         bitmap.insert(1);
         bitmap.insert(100);
         bitmap.insert(1000);
+        let value = RoaringValue::from(bitmap);
 
-        let encoded = handler.encode(&bitmap).unwrap();
-        let decoded = handler.decode(&encoded).unwrap();
+        let encoded = value.encode().unwrap();
+        let decoded = RoaringValue::decode(&encoded).unwrap();
 
-        assert_eq!(bitmap, decoded);
+        assert_eq!(value, decoded);
     }
 
     #[test]
     fn test_empty_bitmap() {
-        let handler = RoaringValue::new();
-        let bitmap = RoaringTreemap::new();
+        let value = RoaringValue::empty();
 
-        let encoded = handler.encode(&bitmap).unwrap();
-        let decoded = handler.decode(&encoded).unwrap();
+        let encoded = value.encode().unwrap();
+        let decoded = RoaringValue::decode(&encoded).unwrap();
 
-        assert_eq!(bitmap, decoded);
+        assert_eq!(value, decoded);
         assert_eq!(decoded.len(), 0);
     }
 
     #[test]
     fn test_serialized_size() {
-        let handler = RoaringValue::new();
         let mut bitmap = RoaringTreemap::new();
         bitmap.insert(1);
         bitmap.insert(2);
 
-        let size = handler.get_serialized_size(&bitmap).unwrap();
+        let value = RoaringValue::from(bitmap);
+
+        let size = value.get_serialized_size().unwrap();
         assert!(size > 1); // At least version byte
         assert!(size < 1000); // Should be reasonably small
 
-        let encoded = handler.encode(&bitmap).unwrap();
+        let encoded = value.encode().unwrap();
         assert_eq!(size, encoded.len());
     }
 
     #[test]
     fn test_single_value() {
-        let handler = RoaringValue::new();
-        let bitmap = handler.from_single(42);
+        let value = RoaringValue::from_single(42);
 
-        assert_eq!(bitmap.len(), 1);
-        assert!(bitmap.contains(42));
+        assert_eq!(value.len(), 1);
+        assert!(value.bitmap().contains(42));
 
-        let encoded = handler.encode(&bitmap).unwrap();
-        let decoded = handler.decode(&encoded).unwrap();
+        let encoded = value.encode().unwrap();
+        let decoded = RoaringValue::decode(&encoded).unwrap();
 
-        assert_eq!(bitmap, decoded);
+        assert_eq!(value, decoded);
     }
 
     #[test]
     fn test_from_iter() {
-        let handler = RoaringValue::new();
         let values = vec![1, 5, 10, 100];
-        let bitmap = handler.from_iter(values.clone());
+        let value = RoaringValue::from_iter(values.clone());
 
-        assert_eq!(bitmap.len(), values.len() as u64);
-        for value in &values {
-            assert!(bitmap.contains(*value));
+        assert_eq!(value.len(), values.len() as u64);
+        for member in &values {
+            assert!(value.bitmap().contains(*member));
         }
 
-        let encoded = handler.encode(&bitmap).unwrap();
-        let decoded = handler.decode(&encoded).unwrap();
+        let encoded = value.encode().unwrap();
+        let decoded = RoaringValue::decode(&encoded).unwrap();
 
-        assert_eq!(bitmap, decoded);
+        assert_eq!(value, decoded);
     }
 
     #[test]
     fn test_invalid_version() {
-        let handler = RoaringValue::new();
         let mut invalid_data = vec![99]; // Invalid version
         invalid_data.extend_from_slice(b"fake_data");
 
-        let result = handler.decode(&invalid_data);
+        let result = RoaringValue::decode(&invalid_data);
         assert!(result.is_err());
     }
 }
